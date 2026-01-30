@@ -1,0 +1,6 @@
+# 直接依赖声明
+# 使用 pip-compile requirements.in 生成 requirements.txt
+
+textgrid
+audiofile
+tqdm

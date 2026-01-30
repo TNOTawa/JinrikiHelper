@@ -1,0 +1,33 @@
+# 虚拟环境
+.venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 分发/打包
+dist/
+build/
+*.egg-info/
+
+# pip-tools
+*.egg
+
+# IDE
+.idea/
+.kiro/
+.vscode/
+*.swp
+*.swo
+
+# 日志
+*.log
+
+# 临时文件
+temp/
+*.tmp
+
+# 数据目录（根据需要调整）
+bank/
