@@ -148,11 +148,15 @@ class SimpleExportPlugin(ExportPlugin):
         segments_dir: str,
         language: str
     ) -> Tuple[bool, str, Dict[str, int]]:
-        """提取分词片段"""
+        """
+        提取分词片段
+        
+        中文：使用words层按字切分，用char_to_pinyin获取拼音名称
+        日语：使用phones层按音素切分，合并辅音+元音为音节
+        """
         try:
             import textgrid
             import soundfile as sf
-            from src.text_processor import char_to_pinyin, is_valid_char
             
             os.makedirs(segments_dir, exist_ok=True)
             
@@ -162,73 +166,262 @@ class SimpleExportPlugin(ExportPlugin):
             
             self._log(f"处理 {len(tg_files)} 个TextGrid文件")
             
-            # 使用全局计数器避免重复
-            pinyin_counts: Dict[str, int] = {}
-            
-            for tg_path in tg_files:
-                basename = os.path.basename(tg_path).replace('.TextGrid', '.wav')
-                wav_path = os.path.join(slices_dir, basename)
-                
-                if not os.path.exists(wav_path):
-                    self._log(f"警告: 找不到 {basename}")
-                    continue
-                
-                tg = textgrid.TextGrid.fromFile(tg_path)
-                audio, sr = sf.read(wav_path, dtype='float32')
-                
-                for interval in tg[0]:
-                    word_text = interval.mark.strip()
-                    
-                    if not word_text or word_text in ['', 'SP', 'AP', '<unk>', 'spn', 'sil']:
-                        continue
-                    
-                    start_time = interval.minTime
-                    end_time = interval.maxTime
-                    duration = end_time - start_time
-                    
-                    chars = list(word_text)
-                    valid_chars = [c for c in chars if is_valid_char(c, language)]
-                    
-                    if not valid_chars:
-                        continue
-                    
-                    char_duration = duration / len(valid_chars)
-                    
-                    for i, char in enumerate(valid_chars):
-                        pinyin = char_to_pinyin(char, language)
-                        if not pinyin:
-                            continue
-                        
-                        char_start = start_time + i * char_duration
-                        char_end = char_start + char_duration
-                        
-                        pinyin_dir = os.path.join(segments_dir, pinyin)
-                        os.makedirs(pinyin_dir, exist_ok=True)
-                        
-                        # 使用全局计数器
-                        current_count = pinyin_counts.get(pinyin, 0)
-                        index = current_count + 1
-                        pinyin_counts[pinyin] = index
-                        
-                        start_sample = int(round(char_start * sr))
-                        end_sample = int(round(char_end * sr))
-                        segment = audio[start_sample:end_sample]
-                        
-                        if len(segment) == 0:
-                            pinyin_counts[pinyin] = current_count  # 回退计数
-                            continue
-                        
-                        output_path = os.path.join(pinyin_dir, f'{index}.wav')
-                        sf.write(output_path, segment, sr, subtype='PCM_16')
-            
-            total = sum(pinyin_counts.values())
-            self._log(f"提取完成: {len(pinyin_counts)} 个拼音，共 {total} 个片段")
-            
-            return True, f"提取完成: {len(pinyin_counts)} 个拼音", pinyin_counts
+            # 根据语言选择提取方法
+            if language in ("japanese", "ja", "jp"):
+                return self._extract_japanese_segments(
+                    tg_files, slices_dir, segments_dir
+                )
+            else:
+                return self._extract_chinese_segments(
+                    tg_files, slices_dir, segments_dir, language
+                )
             
         except Exception as e:
             logger.error(f"提取分词失败: {e}", exc_info=True)
             return False, str(e), {}
+    
+    def _extract_chinese_segments(
+        self,
+        tg_files: List[str],
+        slices_dir: str,
+        segments_dir: str,
+        language: str
+    ) -> Tuple[bool, str, Dict[str, int]]:
+        """
+        中文音频提取
+        
+        使用words层的时间边界，按字符切分，用char_to_pinyin获取拼音
+        """
+        import textgrid
+        import soundfile as sf
+        from src.text_processor import char_to_pinyin, is_valid_char
+        
+        pinyin_counts: Dict[str, int] = {}
+        
+        for tg_path in tg_files:
+            basename = os.path.basename(tg_path).replace('.TextGrid', '.wav')
+            wav_path = os.path.join(slices_dir, basename)
+            
+            if not os.path.exists(wav_path):
+                self._log(f"警告: 找不到 {basename}")
+                continue
+            
+            tg = textgrid.TextGrid.fromFile(tg_path)
+            audio, sr = sf.read(wav_path, dtype='float32')
+            
+            # 使用words层（第一层）
+            words_tier = tg[0]
+            
+            for interval in words_tier:
+                word_text = interval.mark.strip()
+                
+                if not word_text or word_text in ['', 'SP', 'AP', '<unk>', 'spn', 'sil']:
+                    continue
+                
+                start_time = interval.minTime
+                end_time = interval.maxTime
+                duration = end_time - start_time
+                
+                # 获取有效字符
+                chars = list(word_text)
+                valid_chars = [c for c in chars if is_valid_char(c, language)]
+                
+                if not valid_chars:
+                    continue
+                
+                # 按字符均分时长
+                char_duration = duration / len(valid_chars)
+                
+                for i, char in enumerate(valid_chars):
+                    pinyin = char_to_pinyin(char, language)
+                    if not pinyin:
+                        continue
+                    
+                    char_start = start_time + i * char_duration
+                    char_end = char_start + char_duration
+                    
+                    pinyin_dir = os.path.join(segments_dir, pinyin)
+                    os.makedirs(pinyin_dir, exist_ok=True)
+                    
+                    current_count = pinyin_counts.get(pinyin, 0)
+                    index = current_count + 1
+                    pinyin_counts[pinyin] = index
+                    
+                    start_sample = int(round(char_start * sr))
+                    end_sample = int(round(char_end * sr))
+                    segment = audio[start_sample:end_sample]
+                    
+                    if len(segment) == 0:
+                        pinyin_counts[pinyin] = current_count
+                        continue
+                    
+                    output_path = os.path.join(pinyin_dir, f'{index}.wav')
+                    sf.write(output_path, segment, sr, subtype='PCM_16')
+        
+        total = sum(pinyin_counts.values())
+        self._log(f"提取完成: {len(pinyin_counts)} 个拼音，共 {total} 个片段")
+        
+        return True, f"提取完成: {len(pinyin_counts)} 个拼音", pinyin_counts
+    
+    def _extract_japanese_segments(
+        self,
+        tg_files: List[str],
+        slices_dir: str,
+        segments_dir: str
+    ) -> Tuple[bool, str, Dict[str, int]]:
+        """
+        日语音频提取
+        
+        使用phones层，将辅音+元音合并为音节
+        """
+        import textgrid
+        import soundfile as sf
+        
+        phone_counts: Dict[str, int] = {}
+        
+        for tg_path in tg_files:
+            basename = os.path.basename(tg_path).replace('.TextGrid', '.wav')
+            wav_path = os.path.join(slices_dir, basename)
+            
+            if not os.path.exists(wav_path):
+                self._log(f"警告: 找不到 {basename}")
+                continue
+            
+            tg = textgrid.TextGrid.fromFile(tg_path)
+            audio, sr = sf.read(wav_path, dtype='float32')
+            
+            # 查找phones层
+            phones_tier = None
+            for tier in tg:
+                if tier.name.lower() in ('phones', 'phone'):
+                    phones_tier = tier
+                    break
+            
+            if phones_tier is None and len(tg) >= 2:
+                phones_tier = tg[1]
+            
+            if phones_tier is None:
+                self._log(f"警告: {basename} 未找到phones层，跳过")
+                continue
+            
+            # 合并音素为音节
+            syllables = self._merge_japanese_phones(phones_tier)
+            
+            for syllable, start_time, end_time in syllables:
+                if not syllable:
+                    continue
+                
+                # 标准化为ASCII
+                normalized = self._normalize_japanese_phone(syllable)
+                if not normalized:
+                    continue
+                
+                phone_dir = os.path.join(segments_dir, normalized)
+                os.makedirs(phone_dir, exist_ok=True)
+                
+                current_count = phone_counts.get(normalized, 0)
+                index = current_count + 1
+                phone_counts[normalized] = index
+                
+                start_sample = int(round(start_time * sr))
+                end_sample = int(round(end_time * sr))
+                segment = audio[start_sample:end_sample]
+                
+                if len(segment) == 0:
+                    phone_counts[normalized] = current_count
+                    continue
+                
+                output_path = os.path.join(phone_dir, f'{index}.wav')
+                sf.write(output_path, segment, sr, subtype='PCM_16')
+        
+        total = sum(phone_counts.values())
+        self._log(f"提取完成: {len(phone_counts)} 个音节，共 {total} 个片段")
+        
+        return True, f"提取完成: {len(phone_counts)} 个音节", phone_counts
+    
+    def _merge_japanese_phones(self, phones_tier) -> List[Tuple[str, float, float]]:
+        """
+        日语音素合并
+        
+        规则：辅音 + 元音 合并为一个音节
+        """
+        # 元音集合
+        vowels = {'a', 'e', 'i', 'o', 'u', 'ɯ'}
+        skip_marks = {'', 'SP', 'AP', '<unk>', 'spn', 'sil'}
+        
+        syllables = []
+        pending_consonant = None
+        pending_start = None
+        
+        for interval in phones_tier:
+            phone = interval.mark.strip()
+            
+            if phone in skip_marks:
+                pending_consonant = None
+                pending_start = None
+                continue
+            
+            # 移除长音符号判断元音
+            base_phone = phone.rstrip('ː')
+            is_vowel = base_phone in vowels
+            
+            if is_vowel:
+                if pending_consonant is not None:
+                    syllable = pending_consonant + phone
+                    syllables.append((syllable, pending_start, interval.maxTime))
+                    pending_consonant = None
+                    pending_start = None
+                else:
+                    syllables.append((phone, interval.minTime, interval.maxTime))
+            else:
+                if pending_consonant is not None:
+                    syllables.append((pending_consonant, pending_start, interval.minTime))
+                pending_consonant = phone
+                pending_start = interval.minTime
+        
+        if pending_consonant is not None:
+            syllables.append((pending_consonant, pending_start, phones_tier[-1].maxTime))
+        
+        return syllables
+    
+    def _normalize_japanese_phone(self, phone: str) -> str:
+        """
+        日语音素标准化为ASCII
+        """
+        # IPA到罗马音的映射
+        ipa_map = {
+            # 元音
+            'ɯ': 'u',
+            'ɯː': 'u',
+            'aː': 'a',
+            'eː': 'e',
+            'iː': 'i',
+            'oː': 'o',
+            'uː': 'u',
+            # 辅音
+            'ɲ': 'n',
+            'ŋ': 'n',
+            'ɕ': 'sh',
+            'ʑ': 'j',
+            'dʑ': 'j',
+            'tɕ': 'ch',
+            'ɡ': 'g',
+            'ː': '',
+        }
+        
+        result = phone
+        
+        # 按长度降序处理映射
+        for ipa in sorted(ipa_map.keys(), key=len, reverse=True):
+            if ipa in result:
+                result = result.replace(ipa, ipa_map[ipa])
+        
+        # 移除非ASCII字符
+        result = ''.join(c for c in result if c.isascii() and c.isalnum())
+        
+        return result.lower() if result else None
+    
+
     
     def _sort_and_export(
         self,

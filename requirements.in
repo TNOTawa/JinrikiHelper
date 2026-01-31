@@ -4,7 +4,9 @@
 textgrid
 audiofile
 tqdm
-customtkinter
+
+# GUI框架
+gradio==6.2.0
 
 # Whisper 语音识别
 transformers>=4.25.0
@@ -18,3 +20,4 @@ onnxruntime
 
 # 文本处理
 pypinyin
+pykakasi
