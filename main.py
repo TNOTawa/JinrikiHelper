@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-语音数据集处理工具 - 程序入口
+人力V助手 (JinrikiHelper) - 程序入口
+作者：TNOT
+开源协议：MIT
 """
 
 from src.gui import main

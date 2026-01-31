@@ -29,6 +29,6 @@ config.json
 bank/
 export/
 
-# AI 模型相关
-tools/mfa_engine
-models
+# 引擎模型相关
+tools/
+models/

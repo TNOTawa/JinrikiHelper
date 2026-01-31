@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-语音数据集处理工具 GUI
+人力V助手 (JinrikiHelper) GUI
 基于 CustomTkinter 构建
+作者：TNOT
 """
 
 import customtkinter as ctk
@@ -1134,12 +1135,17 @@ class SettingsFrame(ctk.CTkFrame):
         ).pack(anchor="w", pady=(0, 10))
         
         ctk.CTkLabel(
-            about_frame, text="语音数据集处理工具",
+            about_frame, text="人力V助手 (JinrikiHelper)",
             font=ctk.CTkFont(size=12)
         ).pack(anchor="w")
         
         ctk.CTkLabel(
-            about_frame, text="基于 CustomTkinter 构建",
+            about_frame, text="作者：TNOT | 开源协议：MIT",
+            text_color="gray", font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", pady=(2, 0))
+        
+        ctk.CTkLabel(
+            about_frame, text="本工具集成 Montreal Forced Aligner (MIT License)",
             text_color="gray", font=ctk.CTkFont(size=11)
         ).pack(anchor="w", pady=(2, 0))
     
@@ -1155,13 +1161,26 @@ class App(ctk.CTk):
     
     def __init__(self):
         super().__init__()
-        self.title("语音数据集处理工具")
+        self.title("人力V助手 (JinrikiHelper)")
         self.geometry("750x720")
         self.minsize(700, 620)
         
         self.config = ConfigManager()
         self._setup_ui()
         logger.info("应用启动")
+        
+        # 启动后检测 MFA 引擎
+        self.after(100, self._check_mfa_engine)
+    
+    def _check_mfa_engine(self):
+        """检测 MFA 引擎是否存在，缺失则弹窗提醒"""
+        from src.mfa_runner import check_mfa_available
+        if not check_mfa_available():
+            messagebox.showwarning(
+                "MFA 引擎缺失",
+                "未检测到 MFA 引擎 (tools/mfa_engine)。\n\n"
+                "MFA 引擎需要单独下载，请查阅 README.md 获取下载地址和安装说明。"
+            )
     
     def _setup_ui(self):
         self.tabview = ctk.CTkTabview(self)
