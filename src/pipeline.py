@@ -246,14 +246,24 @@ class VoiceBankPipeline:
         os.environ["HF_HOME"] = cache_dir
         os.environ["TRANSFORMERS_CACHE"] = cache_dir
         
+        # 检查模型是否已缓存，决定是否使用离线模式
+        model_cache_name = self.config.whisper_model.replace("/", "--")
+        model_cache_path = Path(cache_dir) / f"models--{model_cache_name}"
+        local_files_only = model_cache_path.exists()
+        
+        if local_files_only:
+            self._log("使用本地缓存模型（离线模式）")
+        
         self._whisper_processor = WhisperProcessor.from_pretrained(
             self.config.whisper_model,
-            cache_dir=cache_dir
+            cache_dir=cache_dir,
+            local_files_only=local_files_only
         )
         self._whisper_model = WhisperForConditionalGeneration.from_pretrained(
             self.config.whisper_model,
             cache_dir=cache_dir,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            local_files_only=local_files_only
         )
         
         # 移动到GPU（如果可用）
