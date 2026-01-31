@@ -112,6 +112,7 @@ def run_mfa_alignment(
         str(model_path),
         str(output_dir),
         "--temp_directory", str(temp_dir),
+        "--use_mp", "false",  # 禁用多进程，避免Windows问题
     ]
     
     if clean:

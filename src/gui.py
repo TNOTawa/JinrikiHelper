@@ -10,6 +10,7 @@ import threading
 import logging
 import os
 import sys
+import json
 
 # 配置日志
 logging.basicConfig(
@@ -24,510 +25,251 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 
-class TextGridToBankFrame(ctk.CTkFrame):
-    """TextGrid转音频库功能面板"""
+class ConfigManager:
+    """配置管理器"""
     
-    def __init__(self, master, log_callback):
-        super().__init__(master)
-        self.log_callback = log_callback
-        self._setup_ui()
+    CONFIG_FILE = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "config.json"
+    )
     
-    def _setup_ui(self):
-        # WAV目录
-        ctk.CTkLabel(self, text="① WAV文件目录:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        self.wav_dir_var = ctk.StringVar()
-        ctk.CTkEntry(self, textvariable=self.wav_dir_var, width=400).grid(row=0, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_wav_dir).grid(row=0, column=2, padx=5, pady=5)
-        
-        # TextGrid目录
-        ctk.CTkLabel(self, text="② TextGrid目录:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.tg_dir_var = ctk.StringVar()
-        ctk.CTkEntry(self, textvariable=self.tg_dir_var, width=400).grid(row=1, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_tg_dir).grid(row=1, column=2, padx=5, pady=5)
-        
-        # 输出目录
-        ctk.CTkLabel(self, text="③ 输出目录:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
-        self.save_dir_var = ctk.StringVar(value="bank")
-        ctk.CTkEntry(self, textvariable=self.save_dir_var, width=400).grid(row=2, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_save_dir).grid(row=2, column=2, padx=5, pady=5)
-        
-        # 执行按钮
-        ctk.CTkButton(self, text="④ 开始转换", command=self._run).grid(row=3, column=1, pady=20)
+    WHISPER_MODELS = {
+        "whisper-small": {"name": "openai/whisper-small", "desc": "小型模型 (~500MB)", "size": "~500MB"},
+        "whisper-medium": {"name": "openai/whisper-medium", "desc": "中型模型 (~1.5GB)", "size": "~1.5GB"}
+    }
     
-    def _browse_wav_dir(self):
-        path = filedialog.askdirectory(title="选择WAV文件目录")
-        if path:
-            self.wav_dir_var.set(path)
+    def __init__(self):
+        self._default_models_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "models"
+        )
+        self.config = self._load()
     
-    def _browse_tg_dir(self):
-        path = filedialog.askdirectory(title="选择TextGrid目录")
-        if path:
-            self.tg_dir_var.set(path)
+    def _load(self) -> dict:
+        """加载配置"""
+        default = {
+            "whisper_model": "whisper-small",
+            "models_dir": self._default_models_dir,
+            "mfa_dir": os.path.join(self._default_models_dir, "mfa"),
+            "bank_dir": os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "bank"
+            ),
+            "show_log": False  # 默认关闭日志
+        }
+        if os.path.exists(self.CONFIG_FILE):
+            try:
+                with open(self.CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    default.update(json.load(f))
+            except Exception as e:
+                logger.warning(f"加载配置失败: {e}")
+        return default
     
-    def _browse_save_dir(self):
-        path = filedialog.askdirectory(title="选择输出目录")
-        if path:
-            self.save_dir_var.set(path)
-    
-    def _run(self):
-        wav_dir = self.wav_dir_var.get()
-        tg_dir = self.tg_dir_var.get()
-        save_dir = self.save_dir_var.get()
-        
-        if not wav_dir or not tg_dir or not save_dir:
-            messagebox.showerror("错误", "请填写所有目录路径")
-            return
-        
-        threading.Thread(target=self._process, args=(wav_dir, tg_dir, save_dir), daemon=True).start()
-    
-    def _process(self, wav_dir, tg_dir, save_dir):
-        import textgrid
-        import glob
-        import audiofile
-        
-        self.log_callback("开始TextGrid转音频库...")
-        logger.info(f"WAV目录: {wav_dir}, TextGrid目录: {tg_dir}, 输出目录: {save_dir}")
-        
+    def save(self):
+        """保存配置"""
         try:
-            if not os.path.exists(save_dir):
-                os.makedirs(save_dir)
-            
-            tg_files = glob.glob(os.path.join(tg_dir, '*.TextGrid'))
-            total = len(tg_files)
-            
-            for i, path in enumerate(tg_files):
-                basename = os.path.basename(path).replace('.TextGrid', '.wav')
-                wav_path = os.path.join(wav_dir, basename)
-                
-                if not os.path.exists(wav_path):
-                    self.log_callback(f"警告: 找不到对应WAV文件 {wav_path}")
-                    continue
-                
-                tg = textgrid.TextGrid.fromFile(path)
-                audio, sr = audiofile.read(wav_path)
-                
-                for word in tg[0]:
-                    if word.mark in ['SP', 'AP', '']:
-                        continue
-                    
-                    word_text = word.mark.split(':')[0]
-                    word_dir = os.path.join(save_dir, word_text)
-                    
-                    if not os.path.exists(word_dir):
-                        os.makedirs(word_dir)
-                    
-                    index = 1
-                    while True:
-                        filename = os.path.join(word_dir, f'{index}.wav')
-                        if not os.path.exists(filename):
-                            break
-                        index += 1
-                    
-                    start_sample = int(word.minTime * sr)
-                    end_sample = int(word.maxTime * sr)
-                    audiofile.write(filename, audio[start_sample:end_sample], sr)
-                
-                self.log_callback(f"进度: {i+1}/{total} - {basename}")
-            
-            self.log_callback("TextGrid转音频库完成!")
-            logger.info("TextGrid转音频库处理完成")
+            with open(self.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            self.log_callback(f"错误: {str(e)}")
-            logger.error(f"处理失败: {e}", exc_info=True)
-
-
-class BankSortFrame(ctk.CTkFrame):
-    """音频库排序功能面板"""
+            logger.error(f"保存配置失败: {e}")
     
-    def __init__(self, master, log_callback):
-        super().__init__(master)
-        self.log_callback = log_callback
-        self._setup_ui()
+    def get(self, key: str, default=None):
+        return self.config.get(key, default)
     
-    def _setup_ui(self):
-        # 音频库目录
-        ctk.CTkLabel(self, text="① 音频库目录:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        self.bank_dir_var = ctk.StringVar(value="bank")
-        ctk.CTkEntry(self, textvariable=self.bank_dir_var, width=400).grid(row=0, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_bank_dir).grid(row=0, column=2, padx=5, pady=5)
-        
-        # 最大数量
-        ctk.CTkLabel(self, text="② 每词最大数量:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.max_count_var = ctk.StringVar(value="100")
-        ctk.CTkEntry(self, textvariable=self.max_count_var, width=100).grid(row=1, column=1, padx=5, pady=5, sticky="w")
-        
-        # 执行按钮
-        ctk.CTkButton(self, text="③ 开始排序", command=self._run).grid(row=2, column=1, pady=20)
-    
-    def _browse_bank_dir(self):
-        path = filedialog.askdirectory(title="选择音频库目录")
-        if path:
-            self.bank_dir_var.set(path)
-    
-    def _run(self):
-        bank_dir = self.bank_dir_var.get()
-        try:
-            max_count = int(self.max_count_var.get())
-        except ValueError:
-            messagebox.showerror("错误", "最大数量必须是整数")
-            return
-        
-        if not bank_dir:
-            messagebox.showerror("错误", "请选择音频库目录")
-            return
-        
-        threading.Thread(target=self._process, args=(bank_dir, max_count), daemon=True).start()
-    
-    def _process(self, bank_dir, max_count):
-        import glob
-        import audiofile
-        import shutil
-        
-        self.log_callback("开始音频库排序...")
-        logger.info(f"音频库目录: {bank_dir}, 最大数量: {max_count}")
-        
-        try:
-            stats = {}
-            wav_files = glob.glob(os.path.join(bank_dir, '**', '*.wav'), recursive=True)
-            
-            self.log_callback(f"扫描到 {len(wav_files)} 个WAV文件")
-            
-            for path in wav_files:
-                rel_path = os.path.relpath(path, bank_dir)
-                parts = rel_path.split(os.sep)
-                if len(parts) >= 2:
-                    word = parts[0]
-                    filename = parts[-1]
-                    if word not in stats:
-                        stats[word] = []
-                    stats[word].append((path, audiofile.duration(path)))
-            
-            self.log_callback(f"统计到 {len(stats)} 个词条")
-            
-            for word in stats:
-                sorted_files = sorted(stats[word], key=lambda x: -x[1])
-                for index, (src_path, duration) in enumerate(sorted_files):
-                    if index >= max_count:
-                        break
-                    dst_path = os.path.join(bank_dir, f'{word}_{index}.wav')
-                    shutil.copyfile(src_path, dst_path)
-                self.log_callback(f"处理词条: {word} ({min(len(sorted_files), max_count)} 个文件)")
-            
-            self.log_callback("音频库排序完成!")
-            logger.info("音频库排序处理完成")
-        except Exception as e:
-            self.log_callback(f"错误: {str(e)}")
-            logger.error(f"处理失败: {e}", exc_info=True)
+    def set(self, key: str, value):
+        self.config[key] = value
+        self.save()
 
 
 class ModelDownloadFrame(ctk.CTkFrame):
     """模型配置功能面板"""
     
-    # Whisper 模型选项
-    WHISPER_MODELS = {
-        "whisper-small": {
-            "name": "openai/whisper-small",
-            "desc": "小型模型，约500MB，速度快",
-            "size": "~500MB"
-        },
-        "whisper-medium": {
-            "name": "openai/whisper-medium",
-            "desc": "中型模型，约1.5GB，精度更高",
-            "size": "~1.5GB"
-        }
-    }
-    
-    # 配置文件路径
-    CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
-    
-    def __init__(self, master, log_callback):
+    def __init__(self, master, log_callback, config: ConfigManager):
         super().__init__(master)
         self.log_callback = log_callback
+        self.config = config
         self.whisper_pipe = None
         self._download_thread = None
-        self._load_config()
         self._setup_ui()
-    
-    def _get_default_models_dir(self):
-        """获取默认模型目录"""
-        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
-    
-    def _load_config(self):
-        """加载配置"""
-        self.config = {
-            "whisper_model": "whisper-small",
-            "models_dir": self._get_default_models_dir(),
-            "mfa_dir": os.path.join(self._get_default_models_dir(), "mfa")
-        }
-        
-        if os.path.exists(self.CONFIG_FILE):
-            try:
-                import json
-                with open(self.CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    saved = json.load(f)
-                    self.config.update(saved)
-                logger.info(f"已加载配置: {self.CONFIG_FILE}")
-            except Exception as e:
-                logger.warning(f"加载配置失败: {e}")
-    
-    def _save_config(self):
-        """保存配置"""
-        try:
-            import json
-            with open(self.CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, ensure_ascii=False, indent=2)
-            logger.info(f"配置已保存: {self.CONFIG_FILE}")
-        except Exception as e:
-            logger.error(f"保存配置失败: {e}")
-    
+
     def _setup_ui(self):
-        # ========== Whisper 模型区域 ==========
-        whisper_label = ctk.CTkLabel(
-            self,
-            text="Whisper 语音识别模型",
-            font=ctk.CTkFont(size=14, weight="bold")
+        # Whisper 模型区域
+        ctk.CTkLabel(self, text="Whisper 语音识别模型", font=ctk.CTkFont(size=14, weight="bold")).grid(
+            row=0, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w"
         )
-        whisper_label.grid(row=0, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w")
         
-        # 模型选择
         ctk.CTkLabel(self, text="模型版本:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.whisper_model_var = ctk.StringVar(value=self.config["whisper_model"])
-        self.model_dropdown = ctk.CTkComboBox(
-            self,
-            values=list(self.WHISPER_MODELS.keys()),
-            variable=self.whisper_model_var,
-            width=200,
+        self.whisper_model_var = ctk.StringVar(value=self.config.get("whisper_model"))
+        ctk.CTkComboBox(
+            self, values=list(ConfigManager.WHISPER_MODELS.keys()),
+            variable=self.whisper_model_var, width=200,
             command=self._on_model_change
-        )
-        self.model_dropdown.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        ).grid(row=1, column=1, padx=5, pady=5, sticky="w")
         
-        # 模型说明
-        self.model_desc_label = ctk.CTkLabel(
-            self,
-            text=self._get_model_desc(),
-            text_color="gray"
-        )
+        self.model_desc_label = ctk.CTkLabel(self, text=self._get_model_desc(), text_color="gray")
         self.model_desc_label.grid(row=1, column=2, padx=10, pady=5, sticky="w")
         
-        # 下载目录
-        ctk.CTkLabel(self, text="下载目录:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
-        self.models_dir_var = ctk.StringVar(value=self.config["models_dir"])
+        ctk.CTkLabel(self, text="模型目录:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.models_dir_var = ctk.StringVar(value=self.config.get("models_dir"))
         ctk.CTkEntry(self, textvariable=self.models_dir_var, width=320).grid(row=2, column=1, padx=5, pady=5, sticky="w")
         ctk.CTkButton(self, text="浏览", width=60, command=self._browse_models_dir).grid(row=2, column=2, padx=5, pady=5, sticky="w")
         
-        # Whisper 状态和按钮
         ctk.CTkLabel(self, text="状态:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
         self.whisper_status = ctk.CTkLabel(self, text="⏳ 未加载", text_color="gray")
         self.whisper_status.grid(row=3, column=1, padx=5, pady=5, sticky="w")
-        
-        self.whisper_btn = ctk.CTkButton(
-            self,
-            text="下载 / 加载模型",
-            command=self._download_whisper,
-            width=140
-        )
+        self.whisper_btn = ctk.CTkButton(self, text="下载 / 加载模型", command=self._download_whisper, width=140)
         self.whisper_btn.grid(row=3, column=2, padx=5, pady=5, sticky="w")
         
-        # 下载进度
         self.progress_label = ctk.CTkLabel(self, text="", text_color="gray")
         self.progress_label.grid(row=4, column=0, columnspan=3, padx=10, pady=5, sticky="w")
         
-        # ========== MFA 模型区域 ==========
-        mfa_label = ctk.CTkLabel(
-            self,
-            text="MFA 声学模型",
-            font=ctk.CTkFont(size=14, weight="bold")
+        # Silero VAD 区域
+        ctk.CTkLabel(self, text="Silero VAD 模型", font=ctk.CTkFont(size=14, weight="bold")).grid(
+            row=5, column=0, columnspan=3, padx=10, pady=(20, 5), sticky="w"
         )
-        mfa_label.grid(row=5, column=0, columnspan=3, padx=10, pady=(20, 5), sticky="w")
-        
-        mfa_desc = ctk.CTkLabel(
-            self,
-            text="Montreal Forced Aligner 模型，用于语音对齐",
-            text_color="gray"
+        ctk.CTkLabel(self, text="用于语音活动检测和音频切片", text_color="gray").grid(
+            row=6, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w"
         )
-        mfa_desc.grid(row=6, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
         
-        # MFA 模型目录
-        ctk.CTkLabel(self, text="模型目录:").grid(row=7, column=0, padx=10, pady=5, sticky="w")
-        self.mfa_dir_var = ctk.StringVar(value=self.config["mfa_dir"])
-        ctk.CTkEntry(self, textvariable=self.mfa_dir_var, width=320).grid(row=7, column=1, padx=5, pady=5, sticky="w")
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_mfa_dir).grid(row=7, column=2, padx=5, pady=5)
+        ctk.CTkLabel(self, text="状态:").grid(row=7, column=0, padx=10, pady=5, sticky="w")
+        self.vad_status = ctk.CTkLabel(self, text="⏳ 未下载", text_color="gray")
+        self.vad_status.grid(row=7, column=1, padx=5, pady=5, sticky="w")
+        self.vad_btn = ctk.CTkButton(self, text="下载模型", command=self._download_vad, width=140)
+        self.vad_btn.grid(row=7, column=2, padx=5, pady=5, sticky="w")
         
-        # MFA 语言选择
-        ctk.CTkLabel(self, text="选择语言:").grid(row=8, column=0, padx=10, pady=5, sticky="w")
+        # MFA 模型区域
+        ctk.CTkLabel(self, text="MFA 声学模型", font=ctk.CTkFont(size=14, weight="bold")).grid(
+            row=8, column=0, columnspan=3, padx=10, pady=(20, 5), sticky="w"
+        )
+        ctk.CTkLabel(self, text="Montreal Forced Aligner 模型，用于语音对齐", text_color="gray").grid(
+            row=9, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w"
+        )
+        
+        ctk.CTkLabel(self, text="模型目录:").grid(row=10, column=0, padx=10, pady=5, sticky="w")
+        self.mfa_dir_var = ctk.StringVar(value=self.config.get("mfa_dir"))
+        ctk.CTkEntry(self, textvariable=self.mfa_dir_var, width=320).grid(row=10, column=1, padx=5, pady=5, sticky="w")
+        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_mfa_dir).grid(row=10, column=2, padx=5, pady=5)
+        
+        ctk.CTkLabel(self, text="选择语言:").grid(row=11, column=0, padx=10, pady=5, sticky="w")
         self.mfa_lang_var = ctk.StringVar(value="mandarin")
-        self.mfa_lang_dropdown = ctk.CTkComboBox(
-            self,
-            values=["mandarin", "japanese"],
-            variable=self.mfa_lang_var,
-            width=200,
+        ctk.CTkComboBox(
+            self, values=["mandarin", "japanese"],
+            variable=self.mfa_lang_var, width=200,
             command=self._on_mfa_lang_change
-        )
-        self.mfa_lang_dropdown.grid(row=8, column=1, padx=5, pady=5, sticky="w")
-        
+        ).grid(row=11, column=1, padx=5, pady=5, sticky="w")
         self.mfa_lang_desc = ctk.CTkLabel(self, text="中文 (普通话)", text_color="gray")
-        self.mfa_lang_desc.grid(row=8, column=2, padx=5, pady=5, sticky="w")
+        self.mfa_lang_desc.grid(row=11, column=2, padx=5, pady=5, sticky="w")
         
-        # MFA 下载按钮和状态
-        ctk.CTkLabel(self, text="状态:").grid(row=9, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(self, text="状态:").grid(row=12, column=0, padx=10, pady=5, sticky="w")
         self.mfa_status = ctk.CTkLabel(self, text="⏳ 未下载", text_color="gray")
-        self.mfa_status.grid(row=9, column=1, padx=5, pady=5, sticky="w")
+        self.mfa_status.grid(row=12, column=1, padx=5, pady=5, sticky="w")
+        self.mfa_download_btn = ctk.CTkButton(self, text="下载模型", command=self._download_mfa_models, width=140)
+        self.mfa_download_btn.grid(row=12, column=2, padx=5, pady=5, sticky="w")
         
-        self.mfa_download_btn = ctk.CTkButton(
-            self,
-            text="下载模型",
-            command=self._download_mfa_models,
-            width=140
-        )
-        self.mfa_download_btn.grid(row=9, column=2, padx=5, pady=5, sticky="w")
-        
-        # MFA 文件列表
-        ctk.CTkLabel(self, text="已有文件:").grid(row=10, column=0, padx=10, pady=(10, 5), sticky="nw")
-        self.mfa_files_text = ctk.CTkTextbox(self, height=70, width=400)
-        self.mfa_files_text.grid(row=10, column=1, columnspan=2, padx=5, pady=(10, 5), sticky="w")
-        self.mfa_files_text.insert("end", "选择目录后显示文件列表")
-        self.mfa_files_text.configure(state="disabled")
-        
-        # 初始扫描
-        self._scan_mfa_dir()
-    
+        self._check_vad_status()
+
     def _get_model_desc(self):
-        """获取当前选中模型的描述"""
-        model_key = self.whisper_model_var.get()
-        info = self.WHISPER_MODELS.get(model_key, {})
-        return f"{info.get('desc', '')} ({info.get('size', '')})"
+        info = ConfigManager.WHISPER_MODELS.get(self.whisper_model_var.get(), {})
+        return info.get('desc', '')
     
     def _on_model_change(self, choice):
-        """模型选择变更"""
         self.model_desc_label.configure(text=self._get_model_desc())
-        self.config["whisper_model"] = choice
-        self._save_config()
-        # 重置状态
+        self.config.set("whisper_model", choice)
         self.whisper_status.configure(text="⏳ 未加载", text_color="gray")
         self.whisper_pipe = None
     
     def _browse_models_dir(self):
-        """浏览选择模型下载目录"""
         path = filedialog.askdirectory(title="选择模型下载目录")
         if path:
             self.models_dir_var.set(path)
-            self.config["models_dir"] = path
-            self._save_config()
+            self.config.set("models_dir", path)
     
     def _browse_mfa_dir(self):
-        """浏览选择 MFA 模型目录"""
         path = filedialog.askdirectory(title="选择 MFA 模型目录")
         if path:
             self.mfa_dir_var.set(path)
-            self.config["mfa_dir"] = path
-            self._save_config()
-            self._scan_mfa_dir()
+            self.config.set("mfa_dir", path)
     
     def _on_mfa_lang_change(self, choice):
-        """MFA 语言选择变更"""
         from src.mfa_model_downloader import get_available_languages
-        langs = get_available_languages()
-        self.mfa_lang_desc.configure(text=langs.get(choice, ""))
+        self.mfa_lang_desc.configure(text=get_available_languages().get(choice, ""))
     
-    def _download_mfa_models(self):
-        """下载 MFA 模型"""
+    def _check_vad_status(self):
+        from src.silero_vad_downloader import is_vad_model_downloaded
+        if is_vad_model_downloaded(self.config.get("models_dir")):
+            self.vad_status.configure(text="✅ 已下载", text_color="green")
+        else:
+            self.vad_status.configure(text="⏳ 未下载", text_color="gray")
+    
+    def _download_vad(self):
         if self._download_thread and self._download_thread.is_alive():
             return
-        
+        self.vad_btn.configure(state="disabled")
+        self.vad_status.configure(text="⏳ 下载中...", text_color="gray")
+        self._download_thread = threading.Thread(target=self._do_download_vad, daemon=True)
+        self._download_thread.start()
+    
+    def _do_download_vad(self):
+        from src.silero_vad_downloader import download_silero_vad
+        self.log_callback("开始下载 Silero VAD 模型...")
+        success, result = download_silero_vad(self.config.get("models_dir"), self.log_callback)
+        if success:
+            self.after(0, lambda: self.vad_status.configure(text="✅ 已下载", text_color="green"))
+            self.log_callback(f"VAD 模型已保存: {result}")
+        else:
+            self.after(0, lambda: self.vad_status.configure(text="❌ 下载失败", text_color="red"))
+        self.after(0, lambda: self.vad_btn.configure(state="normal"))
+    
+    def _download_mfa_models(self):
+        if self._download_thread and self._download_thread.is_alive():
+            return
         self.mfa_download_btn.configure(state="disabled")
         self.mfa_status.configure(text="⏳ 下载中...", text_color="gray")
         self._download_thread = threading.Thread(target=self._do_download_mfa, daemon=True)
         self._download_thread.start()
     
     def _do_download_mfa(self):
-        """执行 MFA 模型下载（后台线程）"""
         from src.mfa_model_downloader import download_language_models
-        
         language = self.mfa_lang_var.get()
         output_dir = self.mfa_dir_var.get()
-        
-        # 确保目录存在
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        
+        os.makedirs(output_dir, exist_ok=True)
         self.log_callback(f"开始下载 MFA 模型: {language}")
-        
         success, acoustic_path, dict_path = download_language_models(
-            language=language,
-            output_dir=output_dir,
-            progress_callback=self.log_callback
+            language=language, output_dir=output_dir, progress_callback=self.log_callback
         )
-        
         if success:
             self.after(0, lambda: self.mfa_status.configure(text="✅ 已下载", text_color="green"))
             self.log_callback(f"声学模型: {acoustic_path}")
             self.log_callback(f"字典文件: {dict_path}")
         else:
             self.after(0, lambda: self.mfa_status.configure(text="❌ 下载失败", text_color="red"))
-        
         self.after(0, lambda: self.mfa_download_btn.configure(state="normal"))
-        self.after(0, self._scan_mfa_dir)
-    
-    def _scan_mfa_dir(self):
-        """扫描 MFA 模型目录"""
-        mfa_dir = self.mfa_dir_var.get()
-        
-        self.mfa_files_text.configure(state="normal")
-        self.mfa_files_text.delete("1.0", "end")
-        
-        if not os.path.exists(mfa_dir):
-            self.mfa_files_text.insert("end", "目录不存在")
-        else:
-            files = []
-            for f in os.listdir(mfa_dir):
-                if f.endswith(('.zip', '.dict', '.txt')):
-                    fpath = os.path.join(mfa_dir, f)
-                    size = os.path.getsize(fpath)
-                    size_str = f"{size / 1024 / 1024:.1f}MB" if size > 1024 * 1024 else f"{size / 1024:.0f}KB"
-                    files.append(f"• {f} ({size_str})")
-            
-            if files:
-                self.mfa_files_text.insert("end", "\n".join(files))
-            else:
-                self.mfa_files_text.insert("end", "目录为空，请手动放入 MFA 模型文件")
-        
-        self.mfa_files_text.configure(state="disabled")
     
     def _download_whisper(self):
-        """下载/加载 Whisper 模型"""
         if self._download_thread and self._download_thread.is_alive():
             return
-        
         self.whisper_btn.configure(state="disabled")
         self.whisper_status.configure(text="⏳ 加载中...", text_color="gray")
         self._download_thread = threading.Thread(target=self._do_download_whisper, daemon=True)
         self._download_thread.start()
     
     def _do_download_whisper(self):
-        """执行 Whisper 模型下载（后台线程）"""
         try:
             self._update_progress("正在加载 transformers 库...")
             from transformers import pipeline
             import torch
             
             model_key = self.whisper_model_var.get()
-            model_name = self.WHISPER_MODELS[model_key]["name"]
+            model_name = ConfigManager.WHISPER_MODELS[model_key]["name"]
             cache_dir = os.path.join(self.models_dir_var.get(), "whisper")
-            
-            # 确保目录存在
-            if not os.path.exists(cache_dir):
-                os.makedirs(cache_dir)
+            os.makedirs(cache_dir, exist_ok=True)
             
             self._update_progress(f"正在下载/加载 {model_key}...")
             self.log_callback(f"开始加载 Whisper 模型: {model_name}")
-            self.log_callback(f"缓存目录: {cache_dir}")
-            logger.info(f"加载 Whisper 模型: {model_name}, 缓存目录: {cache_dir}")
             
-            # 设置环境变量指定缓存目录
             os.environ["HF_HOME"] = cache_dir
             os.environ["TRANSFORMERS_CACHE"] = cache_dir
             
-            # 加载模型
             self.whisper_pipe = pipeline(
                 "automatic-speech-recognition",
                 model=model_name,
@@ -540,185 +282,872 @@ class ModelDownloadFrame(ctk.CTkFrame):
             self.after(0, lambda: self.whisper_status.configure(text="✅ 已就绪", text_color="green"))
             self.after(0, lambda: self.whisper_btn.configure(state="normal", text="重新加载"))
             self.log_callback("Whisper 模型加载完成")
-            logger.info("Whisper 模型加载成功")
-            
         except Exception as e:
-            error_msg = str(e)
             self._update_progress("")
             self.after(0, lambda: self.whisper_status.configure(text="❌ 加载失败", text_color="red"))
             self.after(0, lambda: self.whisper_btn.configure(state="normal"))
-            self.log_callback(f"Whisper 模型加载失败: {error_msg}")
+            self.log_callback(f"Whisper 模型加载失败: {e}")
             logger.error(f"Whisper 模型加载失败: {e}", exc_info=True)
     
     def _update_progress(self, text):
-        """更新进度文本（线程安全）"""
         self.after(0, lambda: self.progress_label.configure(text=text))
     
     def get_whisper_pipeline(self):
-        """获取 Whisper pipeline（供其他模块调用）"""
         return self.whisper_pipe
     
-    def get_mfa_dir(self):
-        """获取 MFA 模型目录路径（供其他模块调用）"""
-        return self.mfa_dir_var.get()
-
-
-class MakeDatasetFrame(ctk.CTkFrame):
-    """批量制作数据集功能面板"""
+    def get_models_dir(self):
+        return self.models_dir_var.get()
     
-    def __init__(self, master, log_callback):
+    def get_mfa_dir(self):
+        return self.mfa_dir_var.get()
+    
+    def get_whisper_model_name(self):
+        return ConfigManager.WHISPER_MODELS[self.whisper_model_var.get()]["name"]
+
+
+class MakeVoiceBankFrame(ctk.CTkFrame):
+    """制作音源页面 - 简化工作流"""
+    
+    def __init__(self, master, log_callback, config: ConfigManager, model_frame: ModelDownloadFrame):
         super().__init__(master)
         self.log_callback = log_callback
+        self.config = config
+        self.model_frame = model_frame
         self._is_running = False
         self._setup_ui()
         self._check_mfa_status()
     
     def _setup_ui(self):
-        # MFA 状态提示
-        self.mfa_status_label = ctk.CTkLabel(
-            self, 
-            text="⏳ 检查 MFA 环境...",
-            font=ctk.CTkFont(size=12)
-        )
-        self.mfa_status_label.grid(row=0, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w")
+        self.scroll_frame = ctk.CTkScrollableFrame(self)
+        self.scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        row = 0
         
-        # 数据集原始目录
-        ctk.CTkLabel(self, text="① 切片及LAB目录:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.raw_dir_var = ctk.StringVar()
-        ctk.CTkEntry(self, textvariable=self.raw_dir_var, width=400).grid(row=1, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_raw_dir).grid(row=1, column=2, padx=5, pady=5)
+        # ========== 基本设置 ==========
+        ctk.CTkLabel(
+            self.scroll_frame, text="基本设置",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).grid(row=row, column=0, columnspan=3, padx=10, pady=(10, 15), sticky="w")
+        row += 1
+        
+        # 音源名称
+        ctk.CTkLabel(self.scroll_frame, text="音源名称:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.source_name_var = ctk.StringVar(value="my_voice")
+        ctk.CTkEntry(self.scroll_frame, textvariable=self.source_name_var, width=200).grid(
+            row=row, column=1, padx=5, pady=5, sticky="w"
+        )
+        ctk.CTkLabel(self.scroll_frame, text="输出到 bank/[音源名称]/", text_color="gray").grid(
+            row=row, column=2, padx=5, pady=5, sticky="w"
+        )
+        row += 1
+        
+        # 输入音频
+        ctk.CTkLabel(self.scroll_frame, text="输入音频:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.input_audio_var = ctk.StringVar()
+        ctk.CTkEntry(self.scroll_frame, textvariable=self.input_audio_var, width=300).grid(
+            row=row, column=1, padx=5, pady=5
+        )
+        btn_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        btn_frame.grid(row=row, column=2, padx=5, pady=5)
+        ctk.CTkButton(btn_frame, text="文件", width=50, command=self._browse_input_file,
+                      fg_color="#5a6a7a", hover_color="#4a5a6a").pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="文件夹", width=60, command=self._browse_input_dir,
+                      fg_color="#5a6a7a", hover_color="#4a5a6a").pack(side="left", padx=2)
+        row += 1
         
         # 输出目录
-        ctk.CTkLabel(self, text="② TextGrid输出目录:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
-        self.output_dir_var = ctk.StringVar()
-        ctk.CTkEntry(self, textvariable=self.output_dir_var, width=400).grid(row=2, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_output_dir).grid(row=2, column=2, padx=5, pady=5)
+        ctk.CTkLabel(self.scroll_frame, text="输出目录:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.output_dir_var = ctk.StringVar(value=self.config.get("bank_dir", "bank"))
+        ctk.CTkEntry(self.scroll_frame, textvariable=self.output_dir_var, width=300).grid(
+            row=row, column=1, padx=5, pady=5
+        )
+        ctk.CTkButton(self.scroll_frame, text="浏览", width=60, command=self._browse_output_dir,
+                      fg_color="#5a6a7a", hover_color="#4a5a6a").grid(
+            row=row, column=2, padx=5, pady=5, sticky="w"
+        )
+        row += 1
         
-        # 字典路径
-        ctk.CTkLabel(self, text="③ 字典文件:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
-        self.dict_path_var = ctk.StringVar(value="models/mfa/mandarin_china_mfa.dict")
-        ctk.CTkEntry(self, textvariable=self.dict_path_var, width=400).grid(row=3, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_dict).grid(row=3, column=2, padx=5, pady=5)
+        # 分隔线
+        ctk.CTkFrame(self.scroll_frame, height=2, fg_color="gray50").grid(
+            row=row, column=0, columnspan=3, padx=10, pady=15, sticky="ew"
+        )
+        row += 1
         
-        # MFA模型路径
-        ctk.CTkLabel(self, text="④ MFA模型文件:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
-        self.mfa_model_var = ctk.StringVar(value="models/mfa/mandarin_mfa.zip")
-        ctk.CTkEntry(self, textvariable=self.mfa_model_var, width=400).grid(row=4, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_mfa).grid(row=4, column=2, padx=5, pady=5)
+        # ========== 模型选择 ==========
+        ctk.CTkLabel(
+            self.scroll_frame, text="模型选择",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).grid(row=row, column=0, columnspan=3, padx=10, pady=(10, 15), sticky="w")
+        row += 1
         
-        # 选项
-        options_frame = ctk.CTkFrame(self)
-        options_frame.grid(row=5, column=0, columnspan=3, padx=10, pady=10, sticky="w")
+        # Whisper模型
+        ctk.CTkLabel(self.scroll_frame, text="Whisper模型:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.whisper_combo = ctk.CTkComboBox(
+            self.scroll_frame, values=["(扫描中...)"], width=250
+        )
+        self.whisper_combo.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+        ctk.CTkButton(self.scroll_frame, text="刷新", width=60, command=self._refresh_whisper_models,
+                      fg_color="#5a6a7a", hover_color="#4a5a6a").grid(
+            row=row, column=2, padx=5, pady=5, sticky="w"
+        )
+        row += 1
         
-        self.single_speaker_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(
-            options_frame, 
-            text="单说话人模式", 
-            variable=self.single_speaker_var
-        ).pack(side="left", padx=10)
+        # MFA字典
+        ctk.CTkLabel(self.scroll_frame, text="MFA字典:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.dict_combo = ctk.CTkComboBox(self.scroll_frame, values=["(扫描中...)"], width=250)
+        self.dict_combo.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+        row += 1
         
-        self.clean_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(
-            options_frame, 
-            text="清理旧缓存", 
-            variable=self.clean_var
-        ).pack(side="left", padx=10)
+        # MFA声学模型
+        ctk.CTkLabel(self.scroll_frame, text="MFA声学模型:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.acoustic_combo = ctk.CTkComboBox(self.scroll_frame, values=["(扫描中...)"], width=250)
+        self.acoustic_combo.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+        ctk.CTkButton(self.scroll_frame, text="刷新", width=60, command=self._refresh_mfa_models,
+                      fg_color="#5a6a7a", hover_color="#4a5a6a").grid(
+            row=row, column=2, padx=5, pady=5, sticky="w"
+        )
+        row += 1
         
-        # 执行按钮
-        self.run_btn = ctk.CTkButton(self, text="⑤ 开始对齐", command=self._run)
-        self.run_btn.grid(row=6, column=1, pady=20)
+        # 语言
+        ctk.CTkLabel(self.scroll_frame, text="转录语言:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.language_var = ctk.StringVar(value="chinese")
+        ctk.CTkComboBox(
+            self.scroll_frame, values=["chinese", "japanese", "english"],
+            variable=self.language_var, width=150
+        ).grid(row=row, column=1, padx=5, pady=5, sticky="w")
+        row += 1
+        
+        # 分隔线
+        ctk.CTkFrame(self.scroll_frame, height=2, fg_color="gray50").grid(
+            row=row, column=0, columnspan=3, padx=10, pady=15, sticky="ew"
+        )
+        row += 1
+        
+        # ========== MFA状态 ==========
+        self.mfa_status_label = ctk.CTkLabel(
+            self.scroll_frame, text="⏳ 检查 MFA 环境...",
+            font=ctk.CTkFont(size=12)
+        )
+        self.mfa_status_label.grid(row=row, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+        row += 1
+        
+        # 分隔线
+        ctk.CTkFrame(self.scroll_frame, height=2, fg_color="gray50").grid(
+            row=row, column=0, columnspan=3, padx=10, pady=15, sticky="ew"
+        )
+        row += 1
+        
+        # ========== 执行按钮 ==========
+        ctk.CTkLabel(
+            self.scroll_frame, text="执行流程",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).grid(row=row, column=0, columnspan=3, padx=10, pady=(10, 15), sticky="w")
+        row += 1
+        
+        # 按钮容器 - 优化排版
+        btn_container = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        btn_container.grid(row=row, column=0, columnspan=3, padx=10, pady=10, sticky="ew")
+        
+        # 分步执行按钮 - 降饱和颜色
+        self.step0_btn = ctk.CTkButton(
+            btn_container, text="步骤0: 切片+转录",
+            command=self._run_step0, width=150, height=36,
+            fg_color="#5c7a9a", hover_color="#4a6888"
+        )
+        self.step0_btn.pack(side="left", padx=8)
+        
+        self.step1_btn = ctk.CTkButton(
+            btn_container, text="步骤1: MFA对齐",
+            command=self._run_step1, width=150, height=36,
+            fg_color="#6a9a7a", hover_color="#588868"
+        )
+        self.step1_btn.pack(side="left", padx=8)
+        row += 1
+        
+        # 一键执行 - 降饱和
+        self.full_btn = ctk.CTkButton(
+            self.scroll_frame, text="▶ 一键执行全部流程",
+            command=self._run_full, width=320, height=40,
+            fg_color="#8a6a8a", hover_color="#785878",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.full_btn.grid(row=row, column=0, columnspan=3, pady=15)
+        row += 1
+        
+        # 进度提示
+        self.progress_label = ctk.CTkLabel(self.scroll_frame, text="", text_color="gray")
+        self.progress_label.grid(row=row, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+        
+        # 初始化模型列表
+        self.after(500, self._refresh_all_models)
     
     def _check_mfa_status(self):
-        """检查 MFA 环境状态"""
         from src.mfa_runner import check_mfa_available
-        
         if check_mfa_available():
-            self.mfa_status_label.configure(
-                text="✅ MFA 外挂环境已就绪 (tools/mfa_engine)",
-                text_color="green"
-            )
+            self.mfa_status_label.configure(text="✅ MFA 环境已就绪", text_color="green")
         else:
-            self.mfa_status_label.configure(
-                text="❌ MFA 外挂环境不可用，请检查 tools/mfa_engine 目录",
-                text_color="red"
-            )
+            self.mfa_status_label.configure(text="❌ MFA 环境不可用，请检查 tools/mfa_engine", text_color="red")
     
-    def _browse_raw_dir(self):
-        path = filedialog.askdirectory(title="选择切片及LAB目录")
+    def _refresh_all_models(self):
+        self._refresh_whisper_models()
+        self._refresh_mfa_models()
+    
+    def _refresh_whisper_models(self):
+        from src.pipeline import scan_whisper_models
+        models_dir = self.model_frame.get_models_dir()
+        models = scan_whisper_models(models_dir)
+        
+        all_models = list(ConfigManager.WHISPER_MODELS.values())
+        preset_names = [m["name"] for m in all_models]
+        
+        for m in models:
+            if m not in preset_names:
+                preset_names.append(m)
+        
+        if preset_names:
+            self.whisper_combo.configure(values=preset_names)
+            self.whisper_combo.set(preset_names[0])
+        else:
+            self.whisper_combo.configure(values=["openai/whisper-small"])
+            self.whisper_combo.set("openai/whisper-small")
+    
+    def _refresh_mfa_models(self):
+        from src.pipeline import scan_mfa_models
+        mfa_dir = self.model_frame.get_mfa_dir()
+        models = scan_mfa_models(os.path.dirname(mfa_dir))
+        
+        if models["dictionary"]:
+            self.dict_combo.configure(values=models["dictionary"])
+            self.dict_combo.set(models["dictionary"][0])
+        else:
+            self.dict_combo.configure(values=["(未找到字典文件)"])
+            self.dict_combo.set("(未找到字典文件)")
+        
+        if models["acoustic"]:
+            self.acoustic_combo.configure(values=models["acoustic"])
+            self.acoustic_combo.set(models["acoustic"][0])
+        else:
+            self.acoustic_combo.configure(values=["(未找到声学模型)"])
+            self.acoustic_combo.set("(未找到声学模型)")
+    
+    def _browse_input_file(self):
+        path = filedialog.askopenfilename(
+            title="选择音频文件",
+            filetypes=[("音频文件", "*.wav *.mp3 *.flac *.ogg *.m4a"), ("所有文件", "*.*")]
+        )
         if path:
-            self.raw_dir_var.set(path)
+            self.input_audio_var.set(path)
+    
+    def _browse_input_dir(self):
+        path = filedialog.askdirectory(title="选择音频文件夹")
+        if path:
+            self.input_audio_var.set(path)
     
     def _browse_output_dir(self):
-        path = filedialog.askdirectory(title="选择TextGrid输出目录")
+        path = filedialog.askdirectory(title="选择输出目录")
         if path:
             self.output_dir_var.set(path)
+            self.config.set("bank_dir", path)
     
-    def _browse_dict(self):
-        path = filedialog.askopenfilename(
-            title="选择字典文件", 
-            filetypes=[("字典文件", "*.dict *.txt"), ("所有文件", "*.*")]
+    def _get_pipeline_config(self):
+        """获取流水线配置"""
+        from src.pipeline import PipelineConfig
+        
+        mfa_dir = self.model_frame.get_mfa_dir()
+        dict_file = self.dict_combo.get()
+        acoustic_file = self.acoustic_combo.get()
+        
+        dict_path = None
+        if dict_file and not dict_file.startswith("("):
+            dict_path = os.path.join(mfa_dir, dict_file)
+        
+        acoustic_path = None
+        if acoustic_file and not acoustic_file.startswith("("):
+            acoustic_path = os.path.join(mfa_dir, acoustic_file)
+        
+        return PipelineConfig(
+            source_name=self.source_name_var.get(),
+            input_path=self.input_audio_var.get(),
+            output_base_dir=self.output_dir_var.get(),
+            models_dir=self.model_frame.get_models_dir(),
+            whisper_model=self.whisper_combo.get(),
+            mfa_dict_path=dict_path,
+            mfa_model_path=acoustic_path,
+            language=self.language_var.get()
         )
-        if path:
-            self.dict_path_var.set(path)
     
-    def _browse_mfa(self):
-        path = filedialog.askopenfilename(
-            title="选择MFA模型", 
-            filetypes=[("ZIP文件", "*.zip"), ("所有文件", "*.*")]
+    def _set_buttons_state(self, state: str):
+        """设置所有按钮状态"""
+        for btn in [self.step0_btn, self.step1_btn, self.full_btn]:
+            btn.configure(state=state)
+    
+    def _run_step0(self):
+        if self._is_running:
+            return
+        if not self._validate_input():
+            return
+        self._is_running = True
+        self._set_buttons_state("disabled")
+        threading.Thread(target=self._do_step0, daemon=True).start()
+    
+    def _do_step0(self):
+        from src.pipeline import VoiceBankPipeline
+        config = self._get_pipeline_config()
+        pipeline = VoiceBankPipeline(config, self.log_callback)
+        
+        self.log_callback("=" * 50)
+        self.log_callback("【步骤0】音频预处理 (VAD切片 + Whisper转录)")
+        success, msg, _ = pipeline.step0_preprocess()
+        
+        if success:
+            self.log_callback(f"✅ {msg}")
+        else:
+            self.log_callback(f"❌ {msg}")
+        self.log_callback("=" * 50)
+        
+        self.after(0, lambda: self._set_buttons_state("normal"))
+        self._is_running = False
+    
+    def _run_step1(self):
+        if self._is_running:
+            return
+        if not self._validate_source_name():
+            return
+        self._is_running = True
+        self._set_buttons_state("disabled")
+        threading.Thread(target=self._do_step1, daemon=True).start()
+    
+    def _do_step1(self):
+        from src.pipeline import VoiceBankPipeline
+        config = self._get_pipeline_config()
+        pipeline = VoiceBankPipeline(config, self.log_callback)
+        
+        self.log_callback("=" * 50)
+        self.log_callback("【步骤1】MFA语音对齐")
+        success, msg = pipeline.step1_mfa_align()
+        
+        if success:
+            self.log_callback(f"✅ {msg}")
+        else:
+            self.log_callback(f"❌ {msg}")
+        self.log_callback("=" * 50)
+        
+        self.after(0, lambda: self._set_buttons_state("normal"))
+        self._is_running = False
+    
+    def _run_full(self):
+        if self._is_running:
+            return
+        if not self._validate_input():
+            return
+        self._is_running = True
+        self._set_buttons_state("disabled")
+        threading.Thread(target=self._do_full, daemon=True).start()
+    
+    def _do_full(self):
+        from src.pipeline import VoiceBankPipeline
+        config = self._get_pipeline_config()
+        pipeline = VoiceBankPipeline(config, self.log_callback)
+        
+        success, msg = pipeline.run_make_pipeline()
+        
+        if not success:
+            self.log_callback(f"❌ 流程中断: {msg}")
+        
+        self.after(0, lambda: self._set_buttons_state("normal"))
+        self._is_running = False
+    
+    def _validate_input(self) -> bool:
+        """验证输入"""
+        if not self.source_name_var.get().strip():
+            messagebox.showerror("错误", "请输入音源名称")
+            return False
+        if not self.input_audio_var.get().strip():
+            messagebox.showerror("错误", "请选择输入音频")
+            return False
+        if not self.output_dir_var.get().strip():
+            messagebox.showerror("错误", "请选择输出目录")
+            return False
+        return True
+    
+    def _validate_source_name(self) -> bool:
+        """验证音源名称"""
+        if not self.source_name_var.get().strip():
+            messagebox.showerror("错误", "请输入音源名称")
+            return False
+        return True
+
+
+class ExportSettingsDialog(ctk.CTkToplevel):
+    """导出设置弹窗"""
+    
+    def __init__(self, master, plugin, voice_bank: str, bank_dir: str, log_callback):
+        super().__init__(master)
+        self.plugin = plugin
+        self.voice_bank = voice_bank
+        self.bank_dir = bank_dir
+        self.log_callback = log_callback
+        self._option_widgets = {}
+        self._is_running = False
+        
+        self.title(f"导出设置 - {plugin.name}")
+        self.geometry("500x400")
+        self.resizable(True, True)
+        self.transient(master)
+        self.grab_set()
+        
+        self._setup_ui()
+        self._center_window()
+    
+    def _center_window(self):
+        """居中显示"""
+        self.update_idletasks()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        x = (self.winfo_screenwidth() - w) // 2
+        y = (self.winfo_screenheight() - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+    
+    def _setup_ui(self):
+        from src.export_plugins import OptionType
+        
+        # 标题
+        header = ctk.CTkFrame(self)
+        header.pack(fill="x", padx=10, pady=10)
+        ctk.CTkLabel(
+            header, text=self.plugin.name,
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            header, text=self.plugin.description,
+            text_color="gray"
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            header, text=f"音源: {self.voice_bank}",
+            text_color="gray"
+        ).pack(anchor="w")
+        
+        # 选项区域（可滚动）
+        self.options_frame = ctk.CTkScrollableFrame(self)
+        self.options_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # 动态生成选项控件
+        for opt in self.plugin.get_options():
+            self._create_option_widget(opt)
+        
+        # 底部按钮
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=10, pady=10)
+        
+        self.cancel_btn = ctk.CTkButton(
+            btn_frame, text="取消", width=80,
+            fg_color="gray", command=self.destroy
         )
-        if path:
-            self.mfa_model_var.set(path)
+        self.cancel_btn.pack(side="left", padx=5)
+        
+        self.reset_btn = ctk.CTkButton(
+            btn_frame, text="恢复默认", width=100,
+            fg_color="#607D8B", command=self._reset_defaults
+        )
+        self.reset_btn.pack(side="left", padx=5)
+        
+        self.export_btn = ctk.CTkButton(
+            btn_frame, text="导出", width=100,
+            fg_color="#6a9a7a", hover_color="#588868", command=self._do_export
+        )
+        self.export_btn.pack(side="right", padx=5)
     
-    def _run(self):
+    def _create_option_widget(self, opt):
+        """创建选项控件"""
+        from src.export_plugins import OptionType
+        
+        frame = ctk.CTkFrame(self.options_frame, fg_color="transparent")
+        frame.pack(fill="x", pady=5)
+        
+        if opt.option_type == OptionType.LABEL:
+            ctk.CTkLabel(frame, text=opt.label, text_color="gray").pack(anchor="w")
+            return
+        
+        ctk.CTkLabel(frame, text=opt.label).pack(anchor="w")
+        
+        if opt.option_type == OptionType.TEXT:
+            var = ctk.StringVar(value=str(opt.default or ""))
+            widget = ctk.CTkEntry(frame, textvariable=var, width=300)
+            widget.pack(anchor="w", pady=2)
+            self._option_widgets[opt.key] = ("text", var)
+            
+        elif opt.option_type == OptionType.NUMBER:
+            var = ctk.StringVar(value=str(opt.default or 0))
+            widget = ctk.CTkEntry(frame, textvariable=var, width=150)
+            widget.pack(anchor="w", pady=2)
+            self._option_widgets[opt.key] = ("number", var, opt.min_value, opt.max_value)
+            
+        elif opt.option_type == OptionType.SWITCH:
+            var = ctk.BooleanVar(value=bool(opt.default))
+            widget = ctk.CTkSwitch(frame, text="", variable=var)
+            widget.pack(anchor="w", pady=2)
+            self._option_widgets[opt.key] = ("switch", var)
+            
+        elif opt.option_type == OptionType.COMBO:
+            var = ctk.StringVar(value=str(opt.default or ""))
+            widget = ctk.CTkComboBox(frame, values=opt.choices, variable=var, width=200)
+            widget.pack(anchor="w", pady=2)
+            self._option_widgets[opt.key] = ("combo", var)
+            
+        elif opt.option_type == OptionType.FILE:
+            var = ctk.StringVar(value=str(opt.default or ""))
+            entry_frame = ctk.CTkFrame(frame, fg_color="transparent")
+            entry_frame.pack(anchor="w", pady=2)
+            entry = ctk.CTkEntry(entry_frame, textvariable=var, width=250)
+            entry.pack(side="left")
+            btn = ctk.CTkButton(
+                entry_frame, text="浏览", width=60,
+                command=lambda v=var, ft=opt.file_types: self._browse_file(v, ft)
+            )
+            btn.pack(side="left", padx=5)
+            self._option_widgets[opt.key] = ("file", var)
+            
+        elif opt.option_type == OptionType.FOLDER:
+            var = ctk.StringVar(value=str(opt.default or ""))
+            entry_frame = ctk.CTkFrame(frame, fg_color="transparent")
+            entry_frame.pack(anchor="w", pady=2)
+            entry = ctk.CTkEntry(entry_frame, textvariable=var, width=250)
+            entry.pack(side="left")
+            btn = ctk.CTkButton(
+                entry_frame, text="浏览", width=60,
+                command=lambda v=var: self._browse_folder(v)
+            )
+            btn.pack(side="left", padx=5)
+            self._option_widgets[opt.key] = ("folder", var)
+        
+        if opt.description:
+            ctk.CTkLabel(
+                frame, text=opt.description,
+                text_color="gray", font=ctk.CTkFont(size=11)
+            ).pack(anchor="w")
+    
+    def _browse_file(self, var, file_types):
+        ft = file_types if file_types else [("所有文件", "*.*")]
+        path = filedialog.askopenfilename(filetypes=ft)
+        if path:
+            var.set(path)
+    
+    def _browse_folder(self, var):
+        path = filedialog.askdirectory()
+        if path:
+            var.set(path)
+    
+    def _get_options_values(self) -> dict:
+        values = {}
+        for key, widget_info in self._option_widgets.items():
+            widget_type = widget_info[0]
+            var = widget_info[1]
+            
+            if widget_type == "number":
+                try:
+                    val = float(var.get())
+                    min_val = widget_info[2]
+                    max_val = widget_info[3]
+                    if min_val is not None:
+                        val = max(min_val, val)
+                    if max_val is not None:
+                        val = min(max_val, val)
+                    values[key] = int(val) if val == int(val) else val
+                except ValueError:
+                    values[key] = 0
+            elif widget_type == "switch":
+                values[key] = var.get()
+            else:
+                values[key] = var.get()
+        
+        return values
+    
+    def _reset_defaults(self):
+        for opt in self.plugin.get_options():
+            if opt.key in self._option_widgets:
+                widget_info = self._option_widgets[opt.key]
+                var = widget_info[1]
+                if widget_info[0] == "switch":
+                    var.set(bool(opt.default))
+                else:
+                    var.set(str(opt.default or ""))
+    
+    def _do_export(self):
         if self._is_running:
             return
         
-        raw_dir = self.raw_dir_var.get()
-        output_dir = self.output_dir_var.get()
-        dict_path = self.dict_path_var.get()
-        mfa_model = self.mfa_model_var.get()
-        
-        if not raw_dir or not output_dir:
-            messagebox.showerror("错误", "请填写输入目录和输出目录")
-            return
-        
         self._is_running = True
-        self.run_btn.configure(state="disabled", text="对齐中...")
+        self._set_buttons_state("disabled")
         
-        threading.Thread(
-            target=self._process,
-            args=(raw_dir, output_dir, dict_path, mfa_model),
-            daemon=True
-        ).start()
+        options = self._get_options_values()
+        threading.Thread(target=self._run_export, args=(options,), daemon=True).start()
     
-    def _process(self, raw_dir, output_dir, dict_path, mfa_model):
-        """执行 MFA 对齐（后台线程）"""
-        from src.mfa_runner import run_mfa_alignment
-        
+    def _run_export(self, options: dict):
         self.log_callback("=" * 50)
-        self.log_callback("开始 MFA 对齐任务")
+        self.log_callback(f"【{self.plugin.name}】音源: {self.voice_bank}")
         
-        success, message = run_mfa_alignment(
-            corpus_dir=raw_dir,
-            output_dir=output_dir,
-            dict_path=dict_path if dict_path else None,
-            model_path=mfa_model if mfa_model else None,
-            single_speaker=self.single_speaker_var.get(),
-            clean=self.clean_var.get(),
-            progress_callback=self.log_callback
-        )
+        self.plugin.set_progress_callback(self.log_callback)
+        success, msg = self.plugin.export(self.voice_bank, self.bank_dir, options)
         
         if success:
-            self.log_callback("✅ MFA 对齐任务完成!")
-            self.log_callback(f"TextGrid 文件已输出到: {output_dir}")
+            self.log_callback(f"✅ {msg}")
         else:
-            self.log_callback(f"❌ MFA 对齐失败: {message}")
-        
+            self.log_callback(f"❌ {msg}")
         self.log_callback("=" * 50)
         
-        # 恢复按钮状态
-        self.after(0, lambda: self.run_btn.configure(state="normal", text="⑤ 开始对齐"))
+        self.after(0, self._on_export_complete)
+    
+    def _on_export_complete(self):
         self._is_running = False
+        self._set_buttons_state("normal")
+        messagebox.showinfo("完成", "导出完成")
+    
+    def _set_buttons_state(self, state: str):
+        self.cancel_btn.configure(state=state)
+        self.reset_btn.configure(state=state)
+        self.export_btn.configure(state=state)
+
+
+class ExportVoiceBankFrame(ctk.CTkFrame):
+    """导出音源页面"""
+    
+    def __init__(self, master, log_callback, config: ConfigManager):
+        super().__init__(master)
+        self.log_callback = log_callback
+        self.config = config
+        self._plugins = {}
+        self._load_plugins()
+        self._setup_ui()
+        self.after(500, self._refresh_voice_banks)
+    
+    def _load_plugins(self):
+        from src.export_plugins import load_plugins
+        plugins_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "export_plugins"
+        )
+        self._plugins = load_plugins(plugins_dir)
+    
+    def _setup_ui(self):
+        # 音源选择区域
+        ctk.CTkLabel(
+            self, text="选择音源",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).grid(row=0, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w")
+        
+        ctk.CTkLabel(self, text="音源:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.voice_bank_var = ctk.StringVar()
+        self.voice_bank_combo = ctk.CTkComboBox(
+            self, values=["(扫描中...)"],
+            variable=self.voice_bank_var, width=250,
+            command=self._on_voice_bank_change
+        )
+        self.voice_bank_combo.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        ctk.CTkButton(self, text="刷新", width=60, command=self._refresh_voice_banks,
+                      fg_color="#5a6a7a", hover_color="#4a5a6a").grid(
+            row=1, column=2, padx=5, pady=5, sticky="w"
+        )
+        
+        # 音源信息
+        self.info_label = ctk.CTkLabel(self, text="", text_color="gray")
+        self.info_label.grid(row=2, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+        
+        # 分隔线
+        ctk.CTkFrame(self, height=2, fg_color="gray50").grid(
+            row=3, column=0, columnspan=3, padx=10, pady=15, sticky="ew"
+        )
+        
+        # 导出方式区域
+        ctk.CTkLabel(
+            self, text="导出方式",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).grid(row=4, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w")
+        
+        # 插件列表（可滚动）
+        self.plugins_frame = ctk.CTkScrollableFrame(self, height=250)
+        self.plugins_frame.grid(row=5, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
+        
+        # 动态生成插件卡片
+        self._create_plugin_cards()
+        
+        # 配置行列权重
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(5, weight=1)
+    
+    def _create_plugin_cards(self):
+        """创建插件卡片 - 整个卡片可点击"""
+        for idx, (name, plugin) in enumerate(self._plugins.items()):
+            # 卡片容器 - 作为按钮
+            card = ctk.CTkFrame(
+                self.plugins_frame,
+                fg_color=("#e8e8e8", "#2a2a2a"),
+                corner_radius=8
+            )
+            card.pack(fill="x", pady=6, padx=4)
+            card.bind("<Enter>", lambda e, c=card: c.configure(fg_color=("#d8d8d8", "#3a3a3a")))
+            card.bind("<Leave>", lambda e, c=card: c.configure(fg_color=("#e8e8e8", "#2a2a2a")))
+            card.bind("<Button-1>", lambda e, p=plugin: self._open_plugin_settings(p))
+            
+            # 内容容器
+            content = ctk.CTkFrame(card, fg_color="transparent")
+            content.pack(fill="x", padx=12, pady=10)
+            content.bind("<Button-1>", lambda e, p=plugin: self._open_plugin_settings(p))
+            
+            # 插件名称 - 白色，较大，左中部
+            name_label = ctk.CTkLabel(
+                content, text=name,
+                font=ctk.CTkFont(size=15, weight="bold"),
+                text_color=("#1a1a1a", "#ffffff")
+            )
+            name_label.pack(anchor="w")
+            name_label.bind("<Button-1>", lambda e, p=plugin: self._open_plugin_settings(p))
+            
+            # 描述
+            desc_label = ctk.CTkLabel(
+                content, text=plugin.description,
+                text_color="gray",
+                font=ctk.CTkFont(size=12)
+            )
+            desc_label.pack(anchor="w", pady=(2, 0))
+            desc_label.bind("<Button-1>", lambda e, p=plugin: self._open_plugin_settings(p))
+            
+            # 作者和版本
+            if plugin.author:
+                meta_label = ctk.CTkLabel(
+                    content, text=f"作者: {plugin.author} | 版本: {plugin.version}",
+                    text_color="gray",
+                    font=ctk.CTkFont(size=10)
+                )
+                meta_label.pack(anchor="w", pady=(2, 0))
+                meta_label.bind("<Button-1>", lambda e, p=plugin: self._open_plugin_settings(p))
+    
+    def _open_plugin_settings(self, plugin):
+        """打开插件设置弹窗"""
+        voice_bank = self.voice_bank_var.get()
+        if not voice_bank or voice_bank.startswith("("):
+            messagebox.showerror("错误", "请先选择有效的音源")
+            return
+        
+        bank_dir = self.config.get("bank_dir", "bank")
+        ExportSettingsDialog(self, plugin, voice_bank, bank_dir, self.log_callback)
+    
+    def _refresh_voice_banks(self):
+        """刷新音源列表"""
+        bank_dir = self.config.get("bank_dir", "bank")
+        voice_banks = []
+        
+        if os.path.exists(bank_dir):
+            for name in os.listdir(bank_dir):
+                source_dir = os.path.join(bank_dir, name)
+                if os.path.isdir(source_dir) and not name.startswith('.'):
+                    slices_dir = os.path.join(source_dir, "slices")
+                    textgrid_dir = os.path.join(source_dir, "textgrid")
+                    if os.path.exists(slices_dir) or os.path.exists(textgrid_dir):
+                        voice_banks.append(name)
+        
+        if voice_banks:
+            self.voice_bank_combo.configure(values=voice_banks)
+            self.voice_bank_combo.set(voice_banks[0])
+            self._on_voice_bank_change(voice_banks[0])
+        else:
+            self.voice_bank_combo.configure(values=["(未找到音源)"])
+            self.voice_bank_combo.set("(未找到音源)")
+            self.info_label.configure(text="")
+    
+    def _on_voice_bank_change(self, choice):
+        """音源选择变化"""
+        if choice.startswith("("):
+            self.info_label.configure(text="")
+            return
+        
+        bank_dir = self.config.get("bank_dir", "bank")
+        source_dir = os.path.join(bank_dir, choice)
+        slices_dir = os.path.join(source_dir, "slices")
+        textgrid_dir = os.path.join(source_dir, "textgrid")
+        
+        slices_count = 0
+        textgrid_count = 0
+        
+        if os.path.exists(slices_dir):
+            slices_count = len([f for f in os.listdir(slices_dir) if f.endswith('.wav')])
+        if os.path.exists(textgrid_dir):
+            textgrid_count = len([f for f in os.listdir(textgrid_dir) if f.endswith('.TextGrid')])
+        
+        self.info_label.configure(
+            text=f"切片: {slices_count} 个 | TextGrid: {textgrid_count} 个"
+        )
+
+
+class SettingsFrame(ctk.CTkFrame):
+    """设置页面"""
+    
+    def __init__(self, master, config: ConfigManager, on_log_toggle):
+        super().__init__(master)
+        self.config = config
+        self.on_log_toggle = on_log_toggle
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        # 标题
+        ctk.CTkLabel(
+            self, text="应用设置",
+            font=ctk.CTkFont(size=18, weight="bold")
+        ).pack(anchor="w", padx=15, pady=(15, 20))
+        
+        # 日志设置区域
+        log_frame = ctk.CTkFrame(self, fg_color="transparent")
+        log_frame.pack(fill="x", padx=15, pady=10)
+        
+        ctk.CTkLabel(
+            log_frame, text="界面设置",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", pady=(0, 10))
+        
+        # 显示日志开关
+        log_switch_frame = ctk.CTkFrame(log_frame, fg_color="transparent")
+        log_switch_frame.pack(fill="x", pady=5)
+        
+        ctk.CTkLabel(log_switch_frame, text="显示日志输出面板").pack(side="left")
+        
+        self.show_log_var = ctk.BooleanVar(value=self.config.get("show_log", False))
+        self.log_switch = ctk.CTkSwitch(
+            log_switch_frame, text="",
+            variable=self.show_log_var,
+            command=self._on_log_switch_change
+        )
+        self.log_switch.pack(side="right")
+        
+        ctk.CTkLabel(
+            log_frame, text="开启后将在主界面底部显示日志输出区域",
+            text_color="gray", font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", pady=(2, 0))
+        
+        # 分隔线
+        ctk.CTkFrame(self, height=1, fg_color="gray50").pack(fill="x", padx=15, pady=20)
+        
+        # 关于区域
+        about_frame = ctk.CTkFrame(self, fg_color="transparent")
+        about_frame.pack(fill="x", padx=15, pady=10)
+        
+        ctk.CTkLabel(
+            about_frame, text="关于",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", pady=(0, 10))
+        
+        ctk.CTkLabel(
+            about_frame, text="语音数据集处理工具",
+            font=ctk.CTkFont(size=12)
+        ).pack(anchor="w")
+        
+        ctk.CTkLabel(
+            about_frame, text="基于 CustomTkinter 构建",
+            text_color="gray", font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", pady=(2, 0))
+    
+    def _on_log_switch_change(self):
+        """日志开关变化"""
+        show_log = self.show_log_var.get()
+        self.config.set("show_log", show_log)
+        self.on_log_toggle(show_log)
 
 
 class App(ctk.CTk):
@@ -726,55 +1155,58 @@ class App(ctk.CTk):
     
     def __init__(self):
         super().__init__()
-        
         self.title("语音数据集处理工具")
-        self.geometry("700x600")
-        self.minsize(600, 500)
+        self.geometry("750x720")
+        self.minsize(700, 620)
         
+        self.config = ConfigManager()
         self._setup_ui()
         logger.info("应用启动")
     
     def _setup_ui(self):
-        # 标签页
         self.tabview = ctk.CTkTabview(self)
         self.tabview.pack(fill="both", expand=True, padx=10, pady=10)
         
-        # 添加标签页（按工作流程顺序排列）
-        tab1 = self.tabview.add("1. 模型下载")
-        tab2 = self.tabview.add("2. 批量制作数据集")
-        tab3 = self.tabview.add("3. TextGrid转音频库")
-        tab4 = self.tabview.add("4. 音频库排序")
+        tab1 = self.tabview.add("模型下载")
+        tab2 = self.tabview.add("制作音源")
+        tab3 = self.tabview.add("导出音源")
+        tab4 = self.tabview.add("设置")
         
-        # 各功能面板
-        self.download_frame = ModelDownloadFrame(tab1, self._log)
+        self.download_frame = ModelDownloadFrame(tab1, self._log, self.config)
         self.download_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
-        self.dataset_frame = MakeDatasetFrame(tab2, self._log)
-        self.dataset_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.make_frame = MakeVoiceBankFrame(tab2, self._log, self.config, self.download_frame)
+        self.make_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
-        self.tg_frame = TextGridToBankFrame(tab3, self._log)
-        self.tg_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.export_frame = ExportVoiceBankFrame(tab3, self._log, self.config)
+        self.export_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
-        self.sort_frame = BankSortFrame(tab4, self._log)
-        self.sort_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.settings_frame = SettingsFrame(tab4, self.config, self._toggle_log_panel)
+        self.settings_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
-        # 日志区域
-        log_frame = ctk.CTkFrame(self)
-        log_frame.pack(fill="x", padx=10, pady=(0, 10))
-        
-        ctk.CTkLabel(log_frame, text="日志输出:").pack(anchor="w", padx=5, pady=2)
-        
-        self.log_text = ctk.CTkTextbox(log_frame, height=150)
+        # 日志区域 - 默认隐藏
+        self.log_frame = ctk.CTkFrame(self)
+        ctk.CTkLabel(self.log_frame, text="日志输出:").pack(anchor="w", padx=5, pady=2)
+        self.log_text = ctk.CTkTextbox(self.log_frame, height=100)
         self.log_text.pack(fill="x", padx=5, pady=5)
+        
+        # 根据配置决定是否显示日志
+        if self.config.get("show_log", False):
+            self.log_frame.pack(fill="x", padx=10, pady=(0, 10))
+    
+    def _toggle_log_panel(self, show: bool):
+        """切换日志面板显示"""
+        if show:
+            self.log_frame.pack(fill="x", padx=10, pady=(0, 10))
+        else:
+            self.log_frame.pack_forget()
     
     def _log(self, message):
-        """添加日志消息"""
         self.log_text.insert("end", f"{message}\n")
         self.log_text.see("end")
 
 
 def main():
-    """程序入口"""
     app = App()
     app.mainloop()
 

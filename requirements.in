@@ -9,8 +9,12 @@ customtkinter
 # Whisper 语音识别
 transformers>=4.25.0
 torch
+torchaudio
 accelerate
 
 # Silero VAD 语音活动检测
 silero-vad>=5.1
 onnxruntime
+
+# 文本处理
+pypinyin

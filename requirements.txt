@@ -132,7 +132,9 @@ torch==2.10.0
     #   silero-vad
     #   torchaudio
 torchaudio==2.10.0
-    # via silero-vad
+    # via
+    #   -r requirements.in
+    #   silero-vad
 tqdm==4.67.1
     # via
     #   -r requirements.in
