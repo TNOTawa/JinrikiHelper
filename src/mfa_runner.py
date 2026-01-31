@@ -32,7 +32,7 @@ def check_mfa_available() -> bool:
     """
     检查 MFA 是否可用
     Windows: 检查外挂 Python 环境
-    Linux: 检查系统 mfa 命令
+    Linux: 检查系统 mfa 命令或 Python 模块
     """
     if IS_WINDOWS:
         if not MFA_ENGINE_DIR.exists():
@@ -48,7 +48,21 @@ def check_mfa_available() -> bool:
         if mfa_path:
             logger.info(f"找到系统 MFA: {mfa_path}")
             return True
-        # 尝试检查 conda 环境中的 mfa
+        # 尝试检查 Python 模块方式
+        try:
+            import sys
+            result = subprocess.run(
+                [sys.executable, "-m", "montreal_forced_aligner", "version"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                logger.info(f"MFA 可用 (Python 模块): {result.stdout.strip()}")
+                return True
+        except Exception as e:
+            logger.warning(f"MFA Python 模块检查失败: {e}")
+        # 尝试直接调用 mfa 命令
         try:
             result = subprocess.run(
                 ["mfa", "version"],
@@ -68,12 +82,17 @@ def _get_mfa_command() -> list:
     """
     获取 MFA 命令前缀
     Windows: 使用外挂 Python 调用
-    Linux: 直接使用 mfa 命令
+    Linux: 优先使用系统 mfa 命令，否则使用 Python 模块
     """
     if IS_WINDOWS:
         return [str(MFA_PYTHON), "-m", "montreal_forced_aligner"]
     else:
-        return ["mfa"]
+        # Linux: 优先检查系统命令
+        if shutil.which("mfa"):
+            return ["mfa"]
+        # 否则使用 Python 模块方式
+        import sys
+        return [sys.executable, "-m", "montreal_forced_aligner"]
 
 
 def _build_mfa_env() -> dict:

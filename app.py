@@ -31,17 +31,19 @@ def setup_environment():
         os.environ.get("SPACE_ID"),           # Hugging Face Spaces
         os.environ.get("MODELSCOPE_SPACE"),   # 魔塔社区
         os.environ.get("GRADIO_SERVER_NAME"), # 通用 Gradio 云端
+        Path("/home/studio_service").exists(), # 魔搭创空间特征目录
     ])
+    
+    # Linux 环境下始终尝试安装 MFA（无论是否云端）
+    if platform.system() != "Windows":
+        logger.info("Linux 环境，检查并安装 MFA...")
+        setup_mfa_linux()
     
     if is_cloud:
         logger.info("检测到云端环境，正在初始化...")
         
         # 设置临时目录
         os.environ.setdefault("TMPDIR", "/tmp")
-        
-        # 安装 MFA (如果未安装，仅 Linux)
-        if platform.system() != "Windows":
-            setup_mfa_linux()
         
         # 下载所有必需模型
         download_all_models()
@@ -53,22 +55,50 @@ def setup_mfa_linux():
     """Linux 环境下安装 MFA"""
     import shutil
     
+    # 检查 mfa 是否已可用
     if shutil.which("mfa"):
-        logger.info("MFA 已安装")
+        logger.info("MFA 已安装 (系统路径)")
         return
+    
+    # 检查是否可以通过 python -m 调用
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "montreal_forced_aligner", "version"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode == 0:
+            logger.info(f"MFA 已安装 (Python 模块): {result.stdout.strip()}")
+            return
+    except Exception:
+        pass
     
     logger.info("正在安装 MFA...")
     
     try:
-        subprocess.run(
+        # 使用 pip 安装
+        result = subprocess.run(
             [sys.executable, "-m", "pip", "install", 
-             "montreal-forced-aligner", "--quiet"],
+             "montreal-forced-aligner"],
             check=True,
-            capture_output=True
+            capture_output=True,
+            text=True
         )
-        logger.info("MFA 安装完成")
+        logger.info("MFA pip 安装完成")
+        
+        # 验证安装
+        verify = subprocess.run(
+            [sys.executable, "-m", "montreal_forced_aligner", "version"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if verify.returncode == 0:
+            logger.info(f"MFA 版本: {verify.stdout.strip()}")
+        
     except subprocess.CalledProcessError as e:
-        logger.warning(f"MFA pip 安装失败: {e}")
+        logger.warning(f"MFA pip 安装失败: {e.stderr if e.stderr else e}")
         try:
             subprocess.run(
                 ["conda", "install", "-c", "conda-forge", 

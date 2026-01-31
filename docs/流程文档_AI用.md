@@ -186,6 +186,18 @@ MFA 支持两种运行模式:
 - `COMBO`: 下拉选择
 - `FILE`/`FOLDER`: 文件/文件夹选择
 
+### 5. MFA 跨平台支持
+
+MFA 支持三种运行模式:
+- **Windows (外挂模式)**: 通过 subprocess 调用独立的 Python 环境 (`tools/mfa_engine`)
+- **Linux (系统命令)**: 直接调用系统 PATH 中的 `mfa` 命令
+- **Linux (Python 模块)**: 通过 `python -m montreal_forced_aligner` 调用
+
+`mfa_runner.py` 会自动检测可用的调用方式，优先级:
+1. 系统 `mfa` 命令 (shutil.which)
+2. Python 模块方式 (`sys.executable -m montreal_forced_aligner`)
+3. Windows 外挂模式 (`tools/mfa_engine/python.exe`)
+
 ## 数据流
 
 ```
