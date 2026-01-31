@@ -246,6 +246,10 @@ class VoiceBankPipeline:
         os.environ["HF_HOME"] = cache_dir
         os.environ["TRANSFORMERS_CACHE"] = cache_dir
         
+        # 云端环境设置 HuggingFace 镜像
+        if Path("/home/studio_service").exists() and not os.environ.get("HF_ENDPOINT"):
+            os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+        
         # 检查模型是否已缓存，决定是否使用离线模式
         model_cache_name = self.config.whisper_model.replace("/", "--")
         model_cache_path = Path(cache_dir) / f"models--{model_cache_name}"

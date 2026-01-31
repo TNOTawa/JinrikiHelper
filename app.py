@@ -65,6 +65,11 @@ def setup_environment():
         Path("/home/studio_service").exists(), # 魔搭创空间特征目录
     ])
     
+    # 魔搭创空间无法访问 HuggingFace，使用镜像
+    if is_cloud and Path("/home/studio_service").exists():
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+        logger.info("已设置 HuggingFace 镜像: hf-mirror.com")
+    
     # Linux 环境下始终尝试安装 MFA（无论是否云端）
     if platform.system() != "Windows":
         logger.info("Linux 环境，检查并安装 MFA...")
