@@ -135,12 +135,22 @@ def setup_mfa_linux():
             env = os.environ.copy()
             env["MAMBA_ROOT_PREFIX"] = str(mamba_root)
             
+            # 先创建环境安装 MFA
             subprocess.run([
                 str(mamba_bin), "create", "-n", "mfa",
                 "-c", "conda-forge",
-                "montreal-forced-aligner", "kalpy", "kaldi=*=cpu*",
+                "python=3.11",
+                "montreal-forced-aligner",
                 "-y"
             ], env=env, check=True, capture_output=True, text=True, timeout=600)
+            
+            # 再更新确保使用 CPU 版本的 kaldi
+            subprocess.run([
+                str(mamba_bin), "install", "-n", "mfa",
+                "-c", "conda-forge",
+                "kalpy", "kaldi=*=cpu*",
+                "-y"
+            ], env=env, capture_output=True, text=True, timeout=300)
             logger.info("MFA 安装完成")
         
         # 3. 将 MFA 环境的 bin 目录加入 PATH
