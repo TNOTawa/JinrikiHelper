@@ -9,12 +9,18 @@ import sys
 import subprocess
 import platform
 import logging
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# 项目根目录
+BASE_DIR = Path(__file__).parent.absolute()
+MODELS_DIR = BASE_DIR / "models"
+MFA_DIR = MODELS_DIR / "mfa"
 
 
 def setup_environment():
@@ -33,18 +39,20 @@ def setup_environment():
         # 设置临时目录
         os.environ.setdefault("TMPDIR", "/tmp")
         
-        # 安装 MFA (如果未安装)
+        # 安装 MFA (如果未安装，仅 Linux)
         if platform.system() != "Windows":
             setup_mfa_linux()
+        
+        # 下载所有必需模型
+        download_all_models()
     else:
         logger.info("本地环境运行")
 
 
 def setup_mfa_linux():
-    """Linux 环境下安装和配置 MFA"""
+    """Linux 环境下安装 MFA"""
     import shutil
     
-    # 检查 mfa 是否已安装
     if shutil.which("mfa"):
         logger.info("MFA 已安装")
         return
@@ -52,7 +60,6 @@ def setup_mfa_linux():
     logger.info("正在安装 MFA...")
     
     try:
-        # 尝试 pip 安装
         subprocess.run(
             [sys.executable, "-m", "pip", "install", 
              "montreal-forced-aligner", "--quiet"],
@@ -60,13 +67,8 @@ def setup_mfa_linux():
             capture_output=True
         )
         logger.info("MFA 安装完成")
-        
-        # 下载中文模型
-        download_mfa_models()
-        
     except subprocess.CalledProcessError as e:
         logger.warning(f"MFA pip 安装失败: {e}")
-        logger.info("尝试使用 conda 安装...")
         try:
             subprocess.run(
                 ["conda", "install", "-c", "conda-forge", 
@@ -74,29 +76,120 @@ def setup_mfa_linux():
                 check=True,
                 capture_output=True
             )
-            download_mfa_models()
+            logger.info("MFA conda 安装完成")
         except Exception as e2:
             logger.error(f"MFA 安装失败: {e2}")
 
 
-def download_mfa_models():
-    """下载 MFA 预训练模型"""
-    models = [
-        ("acoustic", "mandarin_mfa"),
-        ("dictionary", "mandarin_china_mfa"),
-    ]
+def download_all_models():
+    """下载所有必需的模型"""
+    logger.info("=" * 50)
+    logger.info("开始下载模型...")
+    logger.info("=" * 50)
     
-    for model_type, model_name in models:
-        try:
-            logger.info(f"下载 MFA 模型: {model_type}/{model_name}")
-            subprocess.run(
-                ["mfa", "model", "download", model_type, model_name],
-                check=True,
-                capture_output=True,
-                timeout=300  # 5分钟超时
-            )
-        except Exception as e:
-            logger.warning(f"模型下载失败 {model_name}: {e}")
+    # 确保目录存在
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    os.makedirs(MFA_DIR, exist_ok=True)
+    
+    # 1. 下载 Silero VAD
+    download_silero_vad_model()
+    
+    # 2. 下载 Whisper 模型
+    download_whisper_models()
+    
+    # 3. 下载 MFA 模型（中文和日语）
+    download_mfa_models_all()
+    
+    logger.info("=" * 50)
+    logger.info("所有模型下载完成")
+    logger.info("=" * 50)
+
+
+def download_silero_vad_model():
+    """下载 Silero VAD 模型"""
+    logger.info("\n【下载 Silero VAD 模型】")
+    
+    try:
+        from src.silero_vad_downloader import download_silero_vad, is_vad_model_downloaded
+        
+        if is_vad_model_downloaded(str(MODELS_DIR)):
+            logger.info("Silero VAD 模型已存在，跳过下载")
+            return
+        
+        success, result = download_silero_vad(str(MODELS_DIR), logger.info)
+        if success:
+            logger.info(f"Silero VAD 下载成功: {result}")
+        else:
+            logger.warning(f"Silero VAD 下载失败: {result}")
+    except Exception as e:
+        logger.error(f"Silero VAD 下载异常: {e}")
+
+
+def download_whisper_models():
+    """下载 Whisper 模型 (small 和 medium)"""
+    logger.info("\n【下载 Whisper 模型】")
+    
+    try:
+        from transformers import WhisperProcessor, WhisperForConditionalGeneration
+        import torch
+        
+        cache_dir = str(MODELS_DIR / "whisper")
+        os.makedirs(cache_dir, exist_ok=True)
+        os.environ["HF_HOME"] = cache_dir
+        os.environ["TRANSFORMERS_CACHE"] = cache_dir
+        
+        models = ["openai/whisper-small", "openai/whisper-medium"]
+        
+        for model_name in models:
+            logger.info(f"下载 {model_name}...")
+            try:
+                # 检查是否已下载
+                model_cache_name = model_name.replace("/", "--")
+                model_cache_path = Path(cache_dir) / f"models--{model_cache_name}"
+                
+                if model_cache_path.exists():
+                    logger.info(f"{model_name} 已存在，跳过下载")
+                    continue
+                
+                # 下载 processor 和 model
+                _ = WhisperProcessor.from_pretrained(model_name, cache_dir=cache_dir)
+                _ = WhisperForConditionalGeneration.from_pretrained(
+                    model_name,
+                    cache_dir=cache_dir,
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+                )
+                logger.info(f"{model_name} 下载完成")
+            except Exception as e:
+                logger.warning(f"{model_name} 下载失败: {e}")
+                
+    except Exception as e:
+        logger.error(f"Whisper 模型下载异常: {e}")
+
+
+def download_mfa_models_all():
+    """下载 MFA 中文和日语模型"""
+    logger.info("\n【下载 MFA 模型】")
+    
+    try:
+        from src.mfa_model_downloader import download_language_models
+        
+        languages = ["mandarin", "japanese"]
+        
+        for lang in languages:
+            logger.info(f"\n下载 {lang} 模型...")
+            try:
+                success, acoustic_path, dict_path = download_language_models(
+                    lang, str(MFA_DIR), logger.info
+                )
+                if success:
+                    logger.info(f"{lang} 模型下载完成")
+                else:
+                    logger.warning(f"{lang} 模型下载失败")
+            except Exception as e:
+                logger.warning(f"{lang} 模型下载异常: {e}")
+                
+    except Exception as e:
+        logger.error(f"MFA 模型下载异常: {e}")
 
 
 def main():
