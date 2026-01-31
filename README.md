@@ -7,7 +7,7 @@ sdk: gradio
 sdk_version: 6.2.0
 app_file: app.py
 pinned: false
-license: mit
+license: MIT
 ---
 
 # 人力V助手 (JinrikiHelper)
