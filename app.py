@@ -130,12 +130,22 @@ def setup_mfa_linux():
             logger.info("micromamba 下载完成")
         
         # 2. 使用 micromamba 创建环境并安装 MFA
-        if not (mfa_env / "bin" / "mfa").exists():
+        mfa_bin_path = mfa_env / "bin" / "mfa"
+        need_install = not mfa_bin_path.exists()
+        
+        # 如果 mfa 存在但不能正常工作，删除重建
+        if mfa_bin_path.exists() and not verify_mfa_working():
+            logger.info("检测到损坏的 MFA 环境，删除重建...")
+            import shutil as sh
+            sh.rmtree(mfa_env, ignore_errors=True)
+            need_install = True
+        
+        if need_install:
             logger.info("使用 micromamba 安装 MFA...")
             env = os.environ.copy()
             env["MAMBA_ROOT_PREFIX"] = str(mamba_root)
             
-            # 先创建环境安装 MFA
+            # 创建环境并安装 MFA（指定 Python 3.11）
             subprocess.run([
                 str(mamba_bin), "create", "-n", "mfa",
                 "-c", "conda-forge",
@@ -144,7 +154,7 @@ def setup_mfa_linux():
                 "-y"
             ], env=env, check=True, capture_output=True, text=True, timeout=600)
             
-            # 再更新确保使用 CPU 版本的 kaldi
+            # 更新确保使用 CPU 版本的 kaldi
             subprocess.run([
                 str(mamba_bin), "install", "-n", "mfa",
                 "-c", "conda-forge",
