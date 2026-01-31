@@ -10,3 +10,7 @@ customtkinter
 transformers>=4.25.0
 torch
 accelerate
+
+# Silero VAD 语音活动检测
+silero-vad>=5.1
+onnxruntime

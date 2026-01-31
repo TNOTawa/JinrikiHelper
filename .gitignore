@@ -7,11 +7,6 @@ __pycache__/
 *$py.class
 *.so
 
-# 分发/打包
-dist/
-build/
-*.egg-info/
-
 # pip-tools
 *.egg
 
@@ -29,5 +24,10 @@ build/
 temp/
 *.tmp
 
-# 数据目录（根据需要调整）
+# 数据（根据需要调整）
+config.json
 bank/
+
+# AI 模型相关
+tools/mfa_engine
+models

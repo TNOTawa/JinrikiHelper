@@ -353,17 +353,43 @@ class ModelDownloadFrame(ctk.CTkFrame):
         ctk.CTkEntry(self, textvariable=self.mfa_dir_var, width=320).grid(row=7, column=1, padx=5, pady=5, sticky="w")
         ctk.CTkButton(self, text="浏览", width=60, command=self._browse_mfa_dir).grid(row=7, column=2, padx=5, pady=5)
         
-        # MFA 状态
-        ctk.CTkLabel(self, text="状态:").grid(row=8, column=0, padx=10, pady=5, sticky="w")
-        self.mfa_status = ctk.CTkLabel(self, text="🚧 TODO: 自动下载功能开发中", text_color="orange")
-        self.mfa_status.grid(row=8, column=1, columnspan=2, padx=5, pady=5, sticky="w")
+        # MFA 语言选择
+        ctk.CTkLabel(self, text="选择语言:").grid(row=8, column=0, padx=10, pady=5, sticky="w")
+        self.mfa_lang_var = ctk.StringVar(value="mandarin")
+        self.mfa_lang_dropdown = ctk.CTkComboBox(
+            self,
+            values=["mandarin", "japanese"],
+            variable=self.mfa_lang_var,
+            width=200,
+            command=self._on_mfa_lang_change
+        )
+        self.mfa_lang_dropdown.grid(row=8, column=1, padx=5, pady=5, sticky="w")
+        
+        self.mfa_lang_desc = ctk.CTkLabel(self, text="中文 (普通话)", text_color="gray")
+        self.mfa_lang_desc.grid(row=8, column=2, padx=5, pady=5, sticky="w")
+        
+        # MFA 下载按钮和状态
+        ctk.CTkLabel(self, text="状态:").grid(row=9, column=0, padx=10, pady=5, sticky="w")
+        self.mfa_status = ctk.CTkLabel(self, text="⏳ 未下载", text_color="gray")
+        self.mfa_status.grid(row=9, column=1, padx=5, pady=5, sticky="w")
+        
+        self.mfa_download_btn = ctk.CTkButton(
+            self,
+            text="下载模型",
+            command=self._download_mfa_models,
+            width=140
+        )
+        self.mfa_download_btn.grid(row=9, column=2, padx=5, pady=5, sticky="w")
         
         # MFA 文件列表
-        ctk.CTkLabel(self, text="已有文件:").grid(row=9, column=0, padx=10, pady=(10, 5), sticky="nw")
+        ctk.CTkLabel(self, text="已有文件:").grid(row=10, column=0, padx=10, pady=(10, 5), sticky="nw")
         self.mfa_files_text = ctk.CTkTextbox(self, height=70, width=400)
-        self.mfa_files_text.grid(row=9, column=1, columnspan=2, padx=5, pady=(10, 5), sticky="w")
+        self.mfa_files_text.grid(row=10, column=1, columnspan=2, padx=5, pady=(10, 5), sticky="w")
         self.mfa_files_text.insert("end", "选择目录后显示文件列表")
         self.mfa_files_text.configure(state="disabled")
+        
+        # 初始扫描
+        self._scan_mfa_dir()
     
     def _get_model_desc(self):
         """获取当前选中模型的描述"""
@@ -396,6 +422,51 @@ class ModelDownloadFrame(ctk.CTkFrame):
             self.config["mfa_dir"] = path
             self._save_config()
             self._scan_mfa_dir()
+    
+    def _on_mfa_lang_change(self, choice):
+        """MFA 语言选择变更"""
+        from src.mfa_model_downloader import get_available_languages
+        langs = get_available_languages()
+        self.mfa_lang_desc.configure(text=langs.get(choice, ""))
+    
+    def _download_mfa_models(self):
+        """下载 MFA 模型"""
+        if self._download_thread and self._download_thread.is_alive():
+            return
+        
+        self.mfa_download_btn.configure(state="disabled")
+        self.mfa_status.configure(text="⏳ 下载中...", text_color="gray")
+        self._download_thread = threading.Thread(target=self._do_download_mfa, daemon=True)
+        self._download_thread.start()
+    
+    def _do_download_mfa(self):
+        """执行 MFA 模型下载（后台线程）"""
+        from src.mfa_model_downloader import download_language_models
+        
+        language = self.mfa_lang_var.get()
+        output_dir = self.mfa_dir_var.get()
+        
+        # 确保目录存在
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        self.log_callback(f"开始下载 MFA 模型: {language}")
+        
+        success, acoustic_path, dict_path = download_language_models(
+            language=language,
+            output_dir=output_dir,
+            progress_callback=self.log_callback
+        )
+        
+        if success:
+            self.after(0, lambda: self.mfa_status.configure(text="✅ 已下载", text_color="green"))
+            self.log_callback(f"声学模型: {acoustic_path}")
+            self.log_callback(f"字典文件: {dict_path}")
+        else:
+            self.after(0, lambda: self.mfa_status.configure(text="❌ 下载失败", text_color="red"))
+        
+        self.after(0, lambda: self.mfa_download_btn.configure(state="normal"))
+        self.after(0, self._scan_mfa_dir)
     
     def _scan_mfa_dir(self):
         """扫描 MFA 模型目录"""
@@ -498,82 +569,156 @@ class MakeDatasetFrame(ctk.CTkFrame):
     def __init__(self, master, log_callback):
         super().__init__(master)
         self.log_callback = log_callback
+        self._is_running = False
         self._setup_ui()
+        self._check_mfa_status()
     
     def _setup_ui(self):
+        # MFA 状态提示
+        self.mfa_status_label = ctk.CTkLabel(
+            self, 
+            text="⏳ 检查 MFA 环境...",
+            font=ctk.CTkFont(size=12)
+        )
+        self.mfa_status_label.grid(row=0, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w")
+        
         # 数据集原始目录
-        ctk.CTkLabel(self, text="① 切片及LAB目录:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(self, text="① 切片及LAB目录:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
         self.raw_dir_var = ctk.StringVar()
-        ctk.CTkEntry(self, textvariable=self.raw_dir_var, width=400).grid(row=0, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_raw_dir).grid(row=0, column=2, padx=5, pady=5)
+        ctk.CTkEntry(self, textvariable=self.raw_dir_var, width=400).grid(row=1, column=1, padx=5, pady=5)
+        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_raw_dir).grid(row=1, column=2, padx=5, pady=5)
+        
+        # 输出目录
+        ctk.CTkLabel(self, text="② TextGrid输出目录:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.output_dir_var = ctk.StringVar()
+        ctk.CTkEntry(self, textvariable=self.output_dir_var, width=400).grid(row=2, column=1, padx=5, pady=5)
+        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_output_dir).grid(row=2, column=2, padx=5, pady=5)
         
         # 字典路径
-        ctk.CTkLabel(self, text="② 字典文件:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.dict_path_var = ctk.StringVar()
-        ctk.CTkEntry(self, textvariable=self.dict_path_var, width=400).grid(row=1, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_dict).grid(row=1, column=2, padx=5, pady=5)
+        ctk.CTkLabel(self, text="③ 字典文件:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        self.dict_path_var = ctk.StringVar(value="models/mfa/mandarin_china_mfa.dict")
+        ctk.CTkEntry(self, textvariable=self.dict_path_var, width=400).grid(row=3, column=1, padx=5, pady=5)
+        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_dict).grid(row=3, column=2, padx=5, pady=5)
         
         # MFA模型路径
-        ctk.CTkLabel(self, text="③ MFA模型文件:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
-        self.mfa_model_var = ctk.StringVar()
-        ctk.CTkEntry(self, textvariable=self.mfa_model_var, width=400).grid(row=2, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_mfa).grid(row=2, column=2, padx=5, pady=5)
+        ctk.CTkLabel(self, text="④ MFA模型文件:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        self.mfa_model_var = ctk.StringVar(value="models/mfa/mandarin_mfa.zip")
+        ctk.CTkEntry(self, textvariable=self.mfa_model_var, width=400).grid(row=4, column=1, padx=5, pady=5)
+        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_mfa).grid(row=4, column=2, padx=5, pady=5)
         
-        # 临时目录
-        ctk.CTkLabel(self, text="④ 临时目录:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
-        self.temp_dir_var = ctk.StringVar(value="temp")
-        ctk.CTkEntry(self, textvariable=self.temp_dir_var, width=400).grid(row=3, column=1, padx=5, pady=5)
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_temp).grid(row=3, column=2, padx=5, pady=5)
+        # 选项
+        options_frame = ctk.CTkFrame(self)
+        options_frame.grid(row=5, column=0, columnspan=3, padx=10, pady=10, sticky="w")
         
-        # 数据集名称
-        ctk.CTkLabel(self, text="⑤ 数据集名称:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
-        self.dataset_name_var = ctk.StringVar()
-        ctk.CTkEntry(self, textvariable=self.dataset_name_var, width=400).grid(row=4, column=1, padx=5, pady=5)
+        self.single_speaker_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            options_frame, 
+            text="单说话人模式", 
+            variable=self.single_speaker_var
+        ).pack(side="left", padx=10)
+        
+        self.clean_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            options_frame, 
+            text="清理旧缓存", 
+            variable=self.clean_var
+        ).pack(side="left", padx=10)
         
         # 执行按钮
-        ctk.CTkButton(self, text="⑥ 开始制作", command=self._run).grid(row=5, column=1, pady=20)
+        self.run_btn = ctk.CTkButton(self, text="⑤ 开始对齐", command=self._run)
+        self.run_btn.grid(row=6, column=1, pady=20)
+    
+    def _check_mfa_status(self):
+        """检查 MFA 环境状态"""
+        from src.mfa_runner import check_mfa_available
+        
+        if check_mfa_available():
+            self.mfa_status_label.configure(
+                text="✅ MFA 外挂环境已就绪 (tools/mfa_engine)",
+                text_color="green"
+            )
+        else:
+            self.mfa_status_label.configure(
+                text="❌ MFA 外挂环境不可用，请检查 tools/mfa_engine 目录",
+                text_color="red"
+            )
     
     def _browse_raw_dir(self):
         path = filedialog.askdirectory(title="选择切片及LAB目录")
         if path:
             self.raw_dir_var.set(path)
     
+    def _browse_output_dir(self):
+        path = filedialog.askdirectory(title="选择TextGrid输出目录")
+        if path:
+            self.output_dir_var.set(path)
+    
     def _browse_dict(self):
-        path = filedialog.askopenfilename(title="选择字典文件", filetypes=[("文本文件", "*.txt")])
+        path = filedialog.askopenfilename(
+            title="选择字典文件", 
+            filetypes=[("字典文件", "*.dict *.txt"), ("所有文件", "*.*")]
+        )
         if path:
             self.dict_path_var.set(path)
     
     def _browse_mfa(self):
-        path = filedialog.askopenfilename(title="选择MFA模型", filetypes=[("ZIP文件", "*.zip")])
+        path = filedialog.askopenfilename(
+            title="选择MFA模型", 
+            filetypes=[("ZIP文件", "*.zip"), ("所有文件", "*.*")]
+        )
         if path:
             self.mfa_model_var.set(path)
     
-    def _browse_temp(self):
-        path = filedialog.askdirectory(title="选择临时目录")
-        if path:
-            self.temp_dir_var.set(path)
-    
     def _run(self):
-        raw_dir = self.raw_dir_var.get()
-        dict_path = self.dict_path_var.get()
-        mfa_model = self.mfa_model_var.get()
-        temp_dir = self.temp_dir_var.get()
-        dataset_name = self.dataset_name_var.get()
-        
-        if not all([raw_dir, dict_path, mfa_model, temp_dir, dataset_name]):
-            messagebox.showerror("错误", "请填写所有必要字段")
+        if self._is_running:
             return
         
-        self.log_callback("批量制作数据集功能需要MFA环境支持")
-        self.log_callback("请确保已安装Montreal Forced Aligner")
-        self.log_callback(f"配置信息:")
-        self.log_callback(f"  - 原始目录: {raw_dir}")
-        self.log_callback(f"  - 字典: {dict_path}")
-        self.log_callback(f"  - MFA模型: {mfa_model}")
-        self.log_callback(f"  - 临时目录: {temp_dir}")
-        self.log_callback(f"  - 数据集名称: {dataset_name}")
-        self.log_callback("此功能涉及多个外部脚本调用，建议在命令行中执行")
-        logger.info("批量制作数据集配置已记录")
+        raw_dir = self.raw_dir_var.get()
+        output_dir = self.output_dir_var.get()
+        dict_path = self.dict_path_var.get()
+        mfa_model = self.mfa_model_var.get()
+        
+        if not raw_dir or not output_dir:
+            messagebox.showerror("错误", "请填写输入目录和输出目录")
+            return
+        
+        self._is_running = True
+        self.run_btn.configure(state="disabled", text="对齐中...")
+        
+        threading.Thread(
+            target=self._process,
+            args=(raw_dir, output_dir, dict_path, mfa_model),
+            daemon=True
+        ).start()
+    
+    def _process(self, raw_dir, output_dir, dict_path, mfa_model):
+        """执行 MFA 对齐（后台线程）"""
+        from src.mfa_runner import run_mfa_alignment
+        
+        self.log_callback("=" * 50)
+        self.log_callback("开始 MFA 对齐任务")
+        
+        success, message = run_mfa_alignment(
+            corpus_dir=raw_dir,
+            output_dir=output_dir,
+            dict_path=dict_path if dict_path else None,
+            model_path=mfa_model if mfa_model else None,
+            single_speaker=self.single_speaker_var.get(),
+            clean=self.clean_var.get(),
+            progress_callback=self.log_callback
+        )
+        
+        if success:
+            self.log_callback("✅ MFA 对齐任务完成!")
+            self.log_callback(f"TextGrid 文件已输出到: {output_dir}")
+        else:
+            self.log_callback(f"❌ MFA 对齐失败: {message}")
+        
+        self.log_callback("=" * 50)
+        
+        # 恢复按钮状态
+        self.after(0, lambda: self.run_btn.configure(state="normal", text="⑤ 开始对齐"))
+        self._is_running = False
 
 
 class App(ctk.CTk):
