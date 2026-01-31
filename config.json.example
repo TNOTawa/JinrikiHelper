@@ -1,0 +1,7 @@
+{
+  "whisper_model": "whisper-small",
+  "models_dir": "models",
+  "mfa_dir": "models/mfa",
+  "bank_dir": "bank",
+  "silero_vad_dir": "models/silero_vad"
+}
