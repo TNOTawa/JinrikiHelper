@@ -8,7 +8,7 @@
 
 - TextGrid 标注文件转音频库
 - 音频文件排序与筛选
-- 批量制作 DiffSinger 数据集
+- 批量制作 UTAU 人力音源
 
 ## 环境要求
 
@@ -73,4 +73,4 @@ TODO
 
 ## 致谢
 
-- [心水湛清](原项目链接) - 原项目作者
+- [xszqxszq/auto-voice-bank](https://github.com/xszqxszq/auto-voice-bank) - 原项目作者

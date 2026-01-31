@@ -4,3 +4,9 @@
 textgrid
 audiofile
 tqdm
+customtkinter
+
+# Whisper 语音识别
+transformers>=4.25.0
+torch
+accelerate
