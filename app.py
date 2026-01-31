@@ -88,94 +88,79 @@ def setup_environment():
 
 
 def setup_mfa_linux():
-    """Linux 环境下安装 MFA"""
+    """Linux 环境下安装 MFA（使用 micromamba）"""
     import shutil
     
     def verify_mfa_working():
         """验证 MFA 是否能正常工作（包括 kalpy 依赖）"""
         try:
             result = subprocess.run(
-                [sys.executable, "-c", "from _kalpy.gmm import AccumAmDiagGmm; print('ok')"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            return result.returncode == 0 and "ok" in result.stdout
-        except Exception:
-            return False
-    
-    # 检查 mfa 是否已可用且能正常工作
-    mfa_path = shutil.which("mfa")
-    if mfa_path:
-        if verify_mfa_working():
-            logger.info("MFA 已安装且工作正常 (系统路径)")
-            return
-        else:
-            logger.warning("MFA 已安装但 kalpy 模块缺失，需要修复...")
-    
-    # 检查是否可以通过 python -m 调用
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "montreal_forced_aligner", "version"],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if result.returncode == 0 and verify_mfa_working():
-            logger.info(f"MFA 已安装 (Python 模块): {result.stdout.strip()}")
-            return
-    except Exception:
-        pass
-    
-    logger.info("正在安装 MFA 及其依赖...")
-    
-    try:
-        # 先安装 kalpy（MFA 3.x 的核心依赖）
-        logger.info("安装 kalpy...")
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "kalpy"],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        logger.info("kalpy 安装完成")
-        
-        # 再安装 MFA
-        logger.info("安装 montreal-forced-aligner...")
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", 
-             "montreal-forced-aligner"],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        logger.info("MFA pip 安装完成")
-        
-        # 验证安装
-        if verify_mfa_working():
-            verify = subprocess.run(
-                [sys.executable, "-m", "montreal_forced_aligner", "version"],
+                ["mfa", "version"],
                 capture_output=True,
                 text=True,
                 timeout=30
             )
-            if verify.returncode == 0:
-                logger.info(f"MFA 版本: {verify.stdout.strip()}")
-        else:
-            logger.warning("MFA 安装后 kalpy 仍不可用，可能需要重启")
+            return result.returncode == 0
+        except Exception:
+            return False
+    
+    # 检查 mfa 是否已可用
+    if shutil.which("mfa") and verify_mfa_working():
+        logger.info("MFA 已安装且工作正常")
+        return
+    
+    logger.info("MFA 不可用，尝试使用 micromamba 安装...")
+    
+    # micromamba 安装路径
+    mamba_root = Path("/tmp/micromamba")
+    mamba_bin = mamba_root / "bin" / "micromamba"
+    mfa_env = mamba_root / "envs" / "mfa"
+    
+    try:
+        # 1. 安装 micromamba（如果不存在）
+        if not mamba_bin.exists():
+            logger.info("下载 micromamba...")
+            mamba_root.mkdir(parents=True, exist_ok=True)
+            
+            # 下载并安装 micromamba
+            subprocess.run([
+                "bash", "-c",
+                f'curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C {mamba_root} bin/micromamba'
+            ], check=True, capture_output=True, timeout=120)
+            logger.info("micromamba 下载完成")
         
+        # 2. 使用 micromamba 创建环境并安装 MFA
+        if not (mfa_env / "bin" / "mfa").exists():
+            logger.info("使用 micromamba 安装 MFA...")
+            env = os.environ.copy()
+            env["MAMBA_ROOT_PREFIX"] = str(mamba_root)
+            
+            subprocess.run([
+                str(mamba_bin), "create", "-n", "mfa",
+                "-c", "conda-forge",
+                "montreal-forced-aligner", "kalpy", "kaldi=*=cpu*",
+                "-y"
+            ], env=env, check=True, capture_output=True, text=True, timeout=600)
+            logger.info("MFA 安装完成")
+        
+        # 3. 将 MFA 环境的 bin 目录加入 PATH
+        mfa_bin_dir = mfa_env / "bin"
+        if mfa_bin_dir.exists():
+            os.environ["PATH"] = f"{mfa_bin_dir}:{os.environ.get('PATH', '')}"
+            logger.info(f"已将 {mfa_bin_dir} 加入 PATH")
+            
+            # 验证安装
+            if verify_mfa_working():
+                logger.info("MFA 验证通过")
+            else:
+                logger.warning("MFA 安装后验证失败")
+        
+    except subprocess.TimeoutExpired:
+        logger.error("MFA 安装超时")
     except subprocess.CalledProcessError as e:
-        logger.warning(f"MFA pip 安装失败: {e.stderr if e.stderr else e}")
-        try:
-            subprocess.run(
-                ["conda", "install", "-c", "conda-forge", 
-                 "montreal-forced-aligner", "-y"],
-                check=True,
-                capture_output=True
-            )
-            logger.info("MFA conda 安装完成")
-        except Exception as e2:
-            logger.error(f"MFA 安装失败: {e2}")
+        logger.error(f"MFA 安装失败: {e.stderr[-500:] if e.stderr else e}")
+    except Exception as e:
+        logger.error(f"MFA 安装异常: {e}")
 
 
 def download_all_models():
