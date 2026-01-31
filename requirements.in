@@ -1,0 +1,28 @@
+# 直接依赖声明
+# 使用 pip-compile requirements.in 生成 requirements.txt
+
+textgrid
+audiofile
+tqdm
+
+# GUI框架
+gradio==6.2.0
+
+# Whisper 语音识别
+transformers>=4.25.0
+torch
+torchaudio
+accelerate
+
+# Silero VAD 语音活动检测
+silero-vad>=5.1
+onnxruntime
+
+# 文本处理
+pypinyin
+pykakasi
+
+# MFA 强制对齐 (云端 Linux 环境使用)
+# Windows 本地使用 tools/mfa_engine 外挂模式
+# 注意: MFA 依赖 numba，不支持 Python 3.13，云端需单独安装
+# montreal-forced-aligner  # 通过 app.py 在云端动态安装
