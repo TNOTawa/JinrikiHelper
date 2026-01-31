@@ -91,10 +91,27 @@ def setup_mfa_linux():
     """Linux 环境下安装 MFA"""
     import shutil
     
-    # 检查 mfa 是否已可用
-    if shutil.which("mfa"):
-        logger.info("MFA 已安装 (系统路径)")
-        return
+    def verify_mfa_working():
+        """验证 MFA 是否能正常工作（包括 kalpy 依赖）"""
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", "from _kalpy.gmm import AccumAmDiagGmm; print('ok')"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            return result.returncode == 0 and "ok" in result.stdout
+        except Exception:
+            return False
+    
+    # 检查 mfa 是否已可用且能正常工作
+    mfa_path = shutil.which("mfa")
+    if mfa_path:
+        if verify_mfa_working():
+            logger.info("MFA 已安装且工作正常 (系统路径)")
+            return
+        else:
+            logger.warning("MFA 已安装但 kalpy 模块缺失，需要修复...")
     
     # 检查是否可以通过 python -m 调用
     try:
@@ -104,16 +121,27 @@ def setup_mfa_linux():
             text=True,
             timeout=30
         )
-        if result.returncode == 0:
+        if result.returncode == 0 and verify_mfa_working():
             logger.info(f"MFA 已安装 (Python 模块): {result.stdout.strip()}")
             return
     except Exception:
         pass
     
-    logger.info("正在安装 MFA...")
+    logger.info("正在安装 MFA 及其依赖...")
     
     try:
-        # 使用 pip 安装
+        # 先安装 kalpy（MFA 3.x 的核心依赖）
+        logger.info("安装 kalpy...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "kalpy"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        logger.info("kalpy 安装完成")
+        
+        # 再安装 MFA
+        logger.info("安装 montreal-forced-aligner...")
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", 
              "montreal-forced-aligner"],
@@ -124,14 +152,17 @@ def setup_mfa_linux():
         logger.info("MFA pip 安装完成")
         
         # 验证安装
-        verify = subprocess.run(
-            [sys.executable, "-m", "montreal_forced_aligner", "version"],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if verify.returncode == 0:
-            logger.info(f"MFA 版本: {verify.stdout.strip()}")
+        if verify_mfa_working():
+            verify = subprocess.run(
+                [sys.executable, "-m", "montreal_forced_aligner", "version"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if verify.returncode == 0:
+                logger.info(f"MFA 版本: {verify.stdout.strip()}")
+        else:
+            logger.warning("MFA 安装后 kalpy 仍不可用，可能需要重启")
         
     except subprocess.CalledProcessError as e:
         logger.warning(f"MFA pip 安装失败: {e.stderr if e.stderr else e}")

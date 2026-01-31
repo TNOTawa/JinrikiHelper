@@ -32,7 +32,7 @@ def check_mfa_available() -> bool:
     """
     检查 MFA 是否可用
     Windows: 检查外挂 Python 环境
-    Linux: 检查系统 mfa 命令或 Python 模块
+    Linux: 检查系统 mfa 命令或 Python 模块，并验证 kalpy 依赖
     """
     if IS_WINDOWS:
         if not MFA_ENGINE_DIR.exists():
@@ -43,14 +43,35 @@ def check_mfa_available() -> bool:
             return False
         return True
     else:
-        # Linux/macOS: 检查系统命令
+        # Linux/macOS: 需要验证 kalpy 依赖是否可用
+        import sys
+        
+        def verify_kalpy():
+            """验证 kalpy 模块是否可导入"""
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-c", "from _kalpy.gmm import AccumAmDiagGmm; print('ok')"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                return result.returncode == 0 and "ok" in result.stdout
+            except Exception:
+                return False
+        
+        # 先检查 kalpy 是否可用
+        if not verify_kalpy():
+            logger.warning("kalpy 模块不可用，MFA 无法正常工作")
+            return False
+        
+        # 检查系统 mfa 命令
         mfa_path = shutil.which("mfa")
         if mfa_path:
             logger.info(f"找到系统 MFA: {mfa_path}")
             return True
+        
         # 尝试检查 Python 模块方式
         try:
-            import sys
             result = subprocess.run(
                 [sys.executable, "-m", "montreal_forced_aligner", "version"],
                 capture_output=True,
@@ -62,19 +83,7 @@ def check_mfa_available() -> bool:
                 return True
         except Exception as e:
             logger.warning(f"MFA Python 模块检查失败: {e}")
-        # 尝试直接调用 mfa 命令
-        try:
-            result = subprocess.run(
-                ["mfa", "version"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if result.returncode == 0:
-                logger.info(f"MFA 版本: {result.stdout.strip()}")
-                return True
-        except Exception as e:
-            logger.warning(f"MFA 检查失败: {e}")
+        
         return False
 
 
@@ -82,16 +91,32 @@ def _get_mfa_command() -> list:
     """
     获取 MFA 命令前缀
     Windows: 使用外挂 Python 调用
-    Linux: 优先使用系统 mfa 命令，否则使用 Python 模块
+    Linux: 优先使用 Python 模块方式（更可靠），否则使用系统 mfa 命令
     """
     if IS_WINDOWS:
         return [str(MFA_PYTHON), "-m", "montreal_forced_aligner"]
     else:
-        # Linux: 优先检查系统命令
+        # Linux: 优先使用 Python 模块方式（确保使用当前 Python 环境的依赖）
+        import sys
+        
+        # 检查 Python 模块是否可用
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "montreal_forced_aligner", "version"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return [sys.executable, "-m", "montreal_forced_aligner"]
+        except Exception:
+            pass
+        
+        # 回退到系统命令
         if shutil.which("mfa"):
             return ["mfa"]
-        # 否则使用 Python 模块方式
-        import sys
+        
+        # 最后尝试 Python 模块（即使上面检查失败，也许运行时能工作）
         return [sys.executable, "-m", "montreal_forced_aligner"]
 
 
