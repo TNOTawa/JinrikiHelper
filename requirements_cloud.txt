@@ -1,0 +1,30 @@
+# 魔搭创空间云端依赖
+# 基于 requirements.in，移除本地专用依赖，添加云端必需依赖
+
+# GUI框架 (与 ms_deploy.json 中 sdk_version 保持一致)
+gradio==6.2.0
+
+# Whisper 语音识别
+transformers>=4.25.0
+torch
+torchaudio
+accelerate
+
+# Silero VAD 语音活动检测
+silero-vad>=5.1
+onnxruntime
+
+# 音频处理
+textgrid
+audiofile
+soundfile
+
+# 文本处理
+pypinyin
+pykakasi
+
+# 工具
+tqdm
+
+# MFA 强制对齐 (Linux 环境通过 pip 安装)
+montreal-forced-aligner

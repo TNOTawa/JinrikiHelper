@@ -2,6 +2,7 @@
 """
 人力V助手 (JinrikiHelper) Web UI
 基于 Gradio 6.2.0 构建
+支持本地运行和云端部署 (HF Spaces / 魔塔社区)
 作者：TNOT
 """
 
@@ -11,8 +12,18 @@ import logging
 import os
 import sys
 import json
+import platform
+import tempfile
+import zipfile
+import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Callable
+
+# 环境检测
+IS_CLOUD = any([
+    os.environ.get("SPACE_ID"),           # Hugging Face Spaces
+    os.environ.get("MODELSCOPE_SPACE"),   # 魔塔社区
+])
 
 # 配置日志
 logging.basicConfig(
@@ -382,14 +393,42 @@ def run_full_pipeline(source_name: str, input_path: str, output_dir: str,
 
 # ==================== 导出音源功能 ====================
 
+def create_download_zip(source_dir: str, zip_name: str) -> Optional[str]:
+    """
+    打包目录为 zip 文件供下载
+    
+    参数:
+        source_dir: 要打包的目录
+        zip_name: zip 文件名 (不含扩展名)
+    
+    返回:
+        zip 文件路径，失败返回 None
+    """
+    if not os.path.isdir(source_dir):
+        return None
+    
+    try:
+        zip_path = os.path.join(tempfile.gettempdir(), f"{zip_name}.zip")
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(source_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, source_dir)
+                    zf.write(file_path, arcname)
+        return zip_path
+    except Exception as e:
+        logger.error(f"打包失败: {e}")
+        return None
+
+
 def run_export(voice_bank: str, plugin_name: str, options: dict, progress=gr.Progress()):
     """执行导出"""
     if not voice_bank or voice_bank.startswith("("):
-        return "❌ 请选择有效的音源", ""
+        return "❌ 请选择有效的音源", "", None
     
     plugins = load_export_plugins()
     if plugin_name not in plugins:
-        return f"❌ 未找到插件: {plugin_name}", ""
+        return f"❌ 未找到插件: {plugin_name}", "", None
     
     plugin = plugins[plugin_name]
     bank_dir = config_manager.get("bank_dir")
@@ -406,14 +445,38 @@ def run_export(voice_bank: str, plugin_name: str, options: dict, progress=gr.Pro
     success, msg = plugin.export(voice_bank, bank_dir, options)
     progress(1, desc="完成")
     
+    download_file = None
     if success:
         log_callback(f"✅ {msg}")
+        # 打包导出结果供下载
+        export_dir = os.path.join(
+            os.path.dirname(bank_dir), "export", voice_bank, plugin_name.replace(" ", "_")
+        )
+        if os.path.isdir(export_dir):
+            zip_name = f"{voice_bank}_{plugin_name.replace(' ', '_')}"
+            download_file = create_download_zip(export_dir, zip_name)
+            if download_file:
+                log_callback(f"📦 已打包: {os.path.basename(download_file)}")
     else:
         log_callback(f"❌ {msg}")
     log_callback("=" * 50)
     
     status = "✅ 导出完成" if success else f"❌ {msg}"
-    return status, "\n".join(logs)
+    return status, "\n".join(logs), download_file
+
+
+def download_voice_bank(voice_bank: str) -> Optional[str]:
+    """打包音源数据供下载"""
+    if not voice_bank or voice_bank.startswith("("):
+        return None
+    
+    bank_dir = config_manager.get("bank_dir")
+    source_dir = os.path.join(bank_dir, voice_bank)
+    
+    if not os.path.isdir(source_dir):
+        return None
+    
+    return create_download_zip(source_dir, f"{voice_bank}_音源数据")
 
 
 # ==================== 构建界面 ====================
@@ -427,11 +490,25 @@ def create_ui():
     dict_files = mfa_models["dictionary"] if mfa_models["dictionary"] else ["(未找到字典文件)"]
     acoustic_files = mfa_models["acoustic"] if mfa_models["acoustic"] else ["(未找到声学模型)"]
     voice_banks = scan_voice_banks()
-    mfa_status = "✅ MFA 环境已就绪" if check_mfa_available() else "❌ MFA 环境不可用，请检查 tools/mfa_engine"
+    
+    # MFA 状态检测 (区分平台)
+    if check_mfa_available():
+        mfa_status = "✅ MFA 环境已就绪"
+    elif platform.system() == "Windows":
+        mfa_status = "❌ MFA 环境不可用，请检查 tools/mfa_engine"
+    else:
+        mfa_status = "❌ MFA 未安装，请运行: pip install montreal-forced-aligner"
+    
+    # 云端环境提示
+    env_notice = ""
+    if IS_CLOUD:
+        env_notice = "> ☁️ 当前为云端环境，处理完成后请及时下载结果"
     
     with gr.Blocks(title="人力V助手 (JinrikiHelper)") as app:
         gr.Markdown("# 🎤 人力V助手 (JinrikiHelper)")
         gr.Markdown("语音数据集处理工具 - 自动化制作语音音源库")
+        if env_notice:
+            gr.Markdown(env_notice)
         
         with gr.Tabs():
             # ==================== 模型下载页 ====================
@@ -661,10 +738,27 @@ def create_ui():
                 export_status = gr.Textbox(label="状态", interactive=False)
                 export_log = gr.Textbox(label="日志输出", lines=8, interactive=False)
                 
+                # 下载区域
+                gr.Markdown("---")
+                gr.Markdown("### 下载结果")
+                with gr.Row():
+                    export_download = gr.File(label="导出结果下载", interactive=False)
+                    bank_download_btn = gr.Button("📥 下载音源数据", variant="secondary")
+                bank_download = gr.File(label="音源数据下载", interactive=False)
+                
+                if IS_CLOUD:
+                    gr.Markdown("> 💡 云端环境数据不会持久保存，请及时下载处理结果")
+                
                 export_btn.click(
                     fn=run_export,
                     inputs=[voice_bank_select, plugin_select, plugin_options],
-                    outputs=[export_status, export_log]
+                    outputs=[export_status, export_log, export_download]
+                )
+                
+                bank_download_btn.click(
+                    fn=download_voice_bank,
+                    inputs=[voice_bank_select],
+                    outputs=[bank_download]
                 )
             
             # ==================== 设置页 ====================

@@ -1,0 +1,20 @@
+{
+  "sdk_type": "gradio",
+  "sdk_version": "6.2.0",
+  "resource_configuration": "platform/2v-cpu-16g-mem",
+  "base_image": "ubuntu22.04-py311-torch2.3.1-modelscope1.31.0",
+  "environment_variables": [
+    {
+      "name": "MODELSCOPE_SPACE",
+      "value": "true"
+    },
+    {
+      "name": "GRADIO_SERVER_NAME",
+      "value": "0.0.0.0"
+    },
+    {
+      "name": "GRADIO_SERVER_PORT",
+      "value": "7860"
+    }
+  ]
+}

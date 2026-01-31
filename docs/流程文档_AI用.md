@@ -164,9 +164,11 @@
 
 | 模块 | 文件 | 功能 |
 |------|------|------|
-| MFA 运行器 | `mfa_runner.py` | 外挂模式调用 MFA 引擎 |
+| MFA 运行器 | `mfa_runner.py` | 跨平台调用 MFA 引擎 |
 
-MFA 采用 Sidecar Pattern，通过 subprocess 调用独立的 Python 环境 (`tools/mfa_engine`)，避免依赖冲突。
+MFA 支持两种运行模式:
+- **Windows**: Sidecar Pattern，通过 subprocess 调用独立的 Python 环境 (`tools/mfa_engine`)
+- **Linux**: 直接调用系统安装的 `mfa` 命令 (pip install montreal-forced-aligner)
 
 ### 4. 导出插件系统
 
@@ -218,7 +220,7 @@ MFA 采用 Sidecar Pattern，通过 subprocess 调用独立的 Python 环境 (`t
 
 ## 使用流程
 
-### 方式一: Web UI 界面
+### 方式一: 本地 Web UI
 
 1. 运行 `python main.py` 启动 Web UI
 2. 浏览器自动打开 http://127.0.0.1:7860
@@ -235,10 +237,21 @@ MFA 采用 Sidecar Pattern，通过 subprocess 调用独立的 Python 环境 (`t
    - 选择已制作的音源
    - 选择导出插件
    - 配置导出选项并执行
+   - 点击下载按钮获取结果
 
 > 注: 旧版 CustomTkinter 桌面 GUI 已移至 `src/gui_old.py`
 
-### 方式二: 命令行/脚本
+### 方式二: 云端部署 (HF Spaces / 魔塔社区)
+
+1. 使用 `app.py` 作为入口文件
+2. 云端环境自动安装 MFA 和下载模型
+3. 处理完成后通过下载按钮获取结果 (云端数据不持久)
+
+支持的云平台:
+- Hugging Face Spaces (Gradio SDK)
+- 魔塔社区 ModelScope (推荐，国内访问快)
+
+### 方式三: 命令行/脚本
 
 ```python
 from src.pipeline import PipelineConfig, VoiceBankPipeline
@@ -273,5 +286,47 @@ success, msg = pipeline.run_make_pipeline()
 > 注: 旧版桌面 GUI 使用 `customtkinter`，代码保留在 `src/gui_old.py`
 
 MFA 环境:
-- 独立打包在 `tools/mfa_engine/`
-- 包含 Python 3.11 + montreal-forced-aligner
+- **Windows**: 独立打包在 `tools/mfa_engine/`，包含 Python 3.11 + montreal-forced-aligner
+- **Linux**: 通过 pip 安装 `montreal-forced-aligner`
+
+## 云端部署说明
+
+### 目录结构 (云端)
+
+```
+项目根目录/
+├── app.py                  # 云端入口 (自动初始化环境)
+├── main.py                 # 本地入口
+├── requirements.txt
+├── src/
+│   ├── gui.py              # 支持云端环境检测和下载功能
+│   ├── mfa_runner.py       # 跨平台 MFA 调用
+│   └── ...
+└── ...
+```
+
+### 平台差异
+
+| 功能 | 本地 (Windows) | 云端 (Linux) |
+|------|----------------|--------------|
+| MFA 调用 | tools/mfa_engine 外挂 | 系统 mfa 命令 |
+| 数据存储 | 本地持久化 | 临时目录，需下载 |
+| GPU 加速 | 本地显卡 | 取决于平台配置 |
+| 模型缓存 | models/ 目录 | 首次运行自动下载 |
+
+### 魔搭创空间部署配置
+
+部署配置文件 `ms_deploy.json`:
+```json
+{
+  "sdk_type": "gradio",
+  "sdk_version": "6.2.0",
+  "resource_configuration": "platform/2v-cpu-16g-mem",
+  "base_image": "ubuntu22.04-py311-torch2.3.1-modelscope1.31.0"
+}
+```
+
+云端依赖文件 `requirements_cloud.txt`:
+- 移除 Windows 专用依赖 (customtkinter)
+- 添加 `montreal-forced-aligner` (Linux pip 安装)
+- 保持 gradio 版本与 sdk_version 一致
