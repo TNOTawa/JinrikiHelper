@@ -269,16 +269,35 @@ def download_whisper_models():
 
 
 def download_mfa_models_all():
-    """下载 MFA 中文和日语模型"""
+    """下载 MFA 中文和日语模型（带完整性校验）"""
     logger.info("\n【下载 MFA 模型】")
     
     try:
-        from src.mfa_model_downloader import download_language_models
+        from src.mfa_model_downloader import download_language_models, _verify_file_integrity, LANGUAGE_MODELS
         
         languages = ["mandarin", "japanese"]
         
         for lang in languages:
             logger.info(f"\n下载 {lang} 模型...")
+            
+            # 检查现有字典文件是否损坏
+            dict_config = LANGUAGE_MODELS[lang]["dictionary"]
+            dict_path = MFA_DIR / dict_config["filename"]
+            hash_path = MFA_DIR / (dict_config["filename"] + ".sha256")
+            
+            if dict_path.exists():
+                # 如果没有哈希文件，说明是旧版本下载的，需要验证
+                if not hash_path.exists():
+                    logger.info(f"检测到旧版字典文件（无哈希），验证完整性...")
+                    min_lines = dict_config.get("min_lines")
+                    is_valid, reason = _verify_file_integrity(str(dict_path), min_lines, logger.info)
+                    if not is_valid:
+                        logger.warning(f"字典文件损坏: {reason}，删除并重新下载...")
+                        try:
+                            dict_path.unlink()
+                        except Exception as e:
+                            logger.error(f"删除损坏文件失败: {e}")
+            
             try:
                 success, acoustic_path, dict_path = download_language_models(
                     lang, str(MFA_DIR), logger.info

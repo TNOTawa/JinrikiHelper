@@ -102,26 +102,46 @@ def _build_mfa_env() -> dict:
 
 def _clean_dict_empty_lines(dict_path: str) -> int:
     """
-    清理字典文件中的空行
+    清理字典文件中的空行和无效行
     MFA 3.x 解析字典时遇到空行会报 IndexError
     
-    返回: 清理的空行数量
+    返回: 清理的无效行数量
     """
     try:
         with open(dict_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
         
-        # 过滤空行
-        non_empty_lines = [line for line in lines if line.strip()]
-        removed_count = len(lines) - len(non_empty_lines)
+        original_count = len(lines)
+        
+        # 过滤空行和只有空白字符的行
+        # 同时过滤没有制表符分隔的无效行（字典格式: word\tprob\t...）
+        valid_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # 跳过空行
+            if not stripped:
+                continue
+            # 跳过没有制表符的行（无效格式）
+            if '\t' not in line:
+                logger.warning(f"跳过无效字典行: {stripped[:50]}...")
+                continue
+            valid_lines.append(line)
+        
+        removed_count = original_count - len(valid_lines)
         
         if removed_count > 0:
             with open(dict_path, 'w', encoding='utf-8') as f:
-                f.writelines(non_empty_lines)
+                f.writelines(valid_lines)
+            logger.info(f"字典文件清理完成: 原 {original_count} 行, 现 {len(valid_lines)} 行, 移除 {removed_count} 行")
+        else:
+            logger.info(f"字典文件无需清理: {original_count} 行")
         
         return removed_count
+    except PermissionError as e:
+        logger.error(f"清理字典文件失败 - 权限不足: {e}")
+        return 0
     except Exception as e:
-        logger.warning(f"清理字典文件空行失败: {e}")
+        logger.error(f"清理字典文件失败: {e}")
         return 0
 
 
@@ -175,9 +195,10 @@ def run_mfa_alignment(
         return False, f"声学模型不存在: {model_path}"
     
     # 清理字典文件中的空行（MFA 3.x 不支持空行）
+    log(f"检查字典文件: {dict_path}")
     removed = _clean_dict_empty_lines(dict_path)
     if removed > 0:
-        log(f"已清理字典文件中的 {removed} 个空行")
+        log(f"已清理字典文件中的 {removed} 个无效行")
     
     # 创建输出和临时目录
     os.makedirs(output_dir, exist_ok=True)

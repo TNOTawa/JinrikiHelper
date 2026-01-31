@@ -124,13 +124,28 @@ def _verify_file_integrity(
     if file_size == 0:
         return False, "文件为空"
     
-    # 对于字典文件，检查行数
-    if min_lines and file_path.endswith('.dict'):
+    # 对于字典文件，检查行数和格式
+    if file_path.endswith('.dict'):
         try:
+            valid_line_count = 0
+            invalid_line_count = 0
             with open(file_path, 'r', encoding='utf-8') as f:
-                line_count = sum(1 for line in f if line.strip())
-            if line_count < min_lines:
-                return False, f"字典行数不足: {line_count} < {min_lines}"
+                for line in f:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    # 检查是否有制表符分隔（字典格式要求）
+                    if '\t' in line:
+                        valid_line_count += 1
+                    else:
+                        invalid_line_count += 1
+            
+            if min_lines and valid_line_count < min_lines:
+                return False, f"有效字典行数不足: {valid_line_count} < {min_lines}"
+            
+            if invalid_line_count > 100:
+                return False, f"无效行过多: {invalid_line_count} 行"
+                
         except Exception as e:
             return False, f"读取文件失败: {e}"
     
