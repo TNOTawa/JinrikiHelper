@@ -21,3 +21,8 @@ onnxruntime
 # 文本处理
 pypinyin
 pykakasi
+
+# MFA 强制对齐 (云端 Linux 环境使用)
+# Windows 本地使用 tools/mfa_engine 外挂模式
+# 注意: MFA 依赖 numba，不支持 Python 3.13，云端需单独安装
+# montreal-forced-aligner  # 通过 app.py 在云端动态安装
