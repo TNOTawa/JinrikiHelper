@@ -295,14 +295,16 @@ success, msg = pipeline.run_make_pipeline()
 核心依赖:
 - `gradio`: Web UI 框架 (6.2.0)
 - `transformers`: Whisper 模型
+- `torch` + `torchaudio` + `torchvision`: PyTorch 生态（版本需匹配）
 - `silero-vad`: 语音活动检测
 - `textgrid`: TextGrid 文件解析
 - `soundfile`: 音频读写
-- `torchaudio`: 音频重采样
 - `pypinyin`: 中文转拼音
 - `pykakasi`: 日文转罗马音 (可选)
 
 > 注: 旧版桌面 GUI 使用 `customtkinter`，代码保留在 `src/gui_old.py`
+
+> 注: `torchvision` 必须与 `torch` 版本匹配，否则会导致 transformers 导入失败
 
 MFA 环境:
 - **Windows**: 独立打包在 `tools/mfa_engine/`，包含 Python 3.11 + montreal-forced-aligner

@@ -12,6 +12,7 @@ gradio==6.2.0
 transformers>=4.25.0
 torch
 torchaudio
+torchvision
 accelerate
 
 # Silero VAD 语音活动检测

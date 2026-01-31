@@ -19,12 +19,43 @@ logger = logging.getLogger(__name__)
 
 # 项目根目录
 BASE_DIR = Path(__file__).parent.absolute()
-MODELS_DIR = BASE_DIR / "models"
-MFA_DIR = MODELS_DIR / "mfa"
+
+# 云端持久化模型目录（魔搭创空间 /home/studio_service/ 是持久化的）
+PERSISTENT_MODELS_DIR = Path("/home/studio_service/models")
+# 本地模型目录
+LOCAL_MODELS_DIR = BASE_DIR / "models"
+
+# 根据环境选择模型目录
+def get_models_dir():
+    """获取模型目录，云端使用持久化路径"""
+    if PERSISTENT_MODELS_DIR.parent.exists() and not LOCAL_MODELS_DIR.is_symlink():
+        # 魔搭创空间环境，使用持久化目录
+        PERSISTENT_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        # 如果本地 models 目录存在且不是符号链接，先迁移已有模型
+        if LOCAL_MODELS_DIR.exists() and LOCAL_MODELS_DIR.is_dir():
+            import shutil
+            for item in LOCAL_MODELS_DIR.iterdir():
+                dest = PERSISTENT_MODELS_DIR / item.name
+                if not dest.exists():
+                    shutil.move(str(item), str(dest))
+            shutil.rmtree(LOCAL_MODELS_DIR, ignore_errors=True)
+        # 创建符号链接
+        if not LOCAL_MODELS_DIR.exists():
+            LOCAL_MODELS_DIR.symlink_to(PERSISTENT_MODELS_DIR)
+        return PERSISTENT_MODELS_DIR
+    return LOCAL_MODELS_DIR
+
+MODELS_DIR = None  # 延迟初始化
+MFA_DIR = None
 
 
 def setup_environment():
     """初始化云端环境"""
+    global MODELS_DIR, MFA_DIR
+    
+    # 初始化模型目录（可能创建符号链接）
+    MODELS_DIR = get_models_dir()
+    MFA_DIR = MODELS_DIR / "mfa"
     
     # 检测运行环境
     is_cloud = any([
