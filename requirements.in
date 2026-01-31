@@ -1,6 +1,9 @@
 # 直接依赖声明
 # 使用 pip-compile requirements.in 生成 requirements.txt
 
+# NumPy 版本约束：scipy 等库尚未完全兼容 NumPy 2.x
+numpy<2
+
 textgrid
 audiofile
 tqdm

@@ -23,7 +23,7 @@ audeer==2.3.1
     # via audiofile
 audiofile==1.6.0
     # via -r requirements.in
-# audioop-lts==0.2.2  # Python 3.13+ only, skipped for Python 3.11 compatibility
+audioop-lts==0.2.2
     # via gradio
 audmath==1.4.4
     # via audiofile
@@ -115,8 +115,9 @@ mpmath==1.3.0
     # via sympy
 networkx==3.6.1
     # via torch
-numpy==2.4.1
+numpy==1.26.4
     # via
+    #   -r requirements.in
     #   accelerate
     #   audiofile
     #   audmath
