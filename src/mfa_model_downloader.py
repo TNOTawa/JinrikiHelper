@@ -182,12 +182,40 @@ def download_dictionary(
     if os.path.exists(dest_path):
         if progress_callback:
             progress_callback(f"字典文件已存在: {dest_path}")
+        # 确保已有文件也清理空行
+        _clean_dictionary_file(dest_path, progress_callback)
         return True, dest_path
     
     if _download_file(url, dest_path, progress_callback):
+        # 清理字典文件中的空行（MFA 3.x 不支持空行）
+        _clean_dictionary_file(dest_path, progress_callback)
         return True, dest_path
     else:
         return False, "字典文件下载失败"
+
+
+def _clean_dictionary_file(
+    dict_path: str,
+    progress_callback: Optional[Callable[[str], None]] = None
+):
+    """
+    清理字典文件中的空行
+    MFA 3.x 解析字典时遇到空行会报 IndexError
+    """
+    try:
+        with open(dict_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        # 过滤空行
+        non_empty_lines = [line for line in lines if line.strip()]
+        
+        if len(non_empty_lines) < len(lines):
+            with open(dict_path, 'w', encoding='utf-8') as f:
+                f.writelines(non_empty_lines)
+            if progress_callback:
+                progress_callback(f"已清理 {len(lines) - len(non_empty_lines)} 个空行")
+    except Exception as e:
+        logger.warning(f"清理字典文件失败: {e}")
 
 
 def download_language_models(
