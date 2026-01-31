@@ -2,9 +2,11 @@
 """
 MFA 模型下载模块
 支持下载中文和日文的声学模型及字典
+包含 SHA256 哈希校验，确保文件完整性
 """
 
 import os
+import hashlib
 import logging
 import urllib.request
 import urllib.error
@@ -19,19 +21,24 @@ GITHUB_RAW_BASE = "https://raw.githubusercontent.com/MontrealCorpusTools/mfa-mod
 
 # 支持的语言配置
 # 格式: {语言代码: {名称, 声学模型信息, 字典信息}}
+# sha256: 官方文件的 SHA256 哈希值（清理空行后），用于校验文件完整性
 LANGUAGE_MODELS = {
     "mandarin": {
         "name": "中文 (普通话)",
         "acoustic": {
             "tag": "acoustic-mandarin_mfa-v3.0.0",
             "filename": "mandarin_mfa.zip",
-            "description": "Mandarin MFA acoustic model v3.0.0"
+            "description": "Mandarin MFA acoustic model v3.0.0",
+            # 声学模型是 zip 文件，不需要清理空行，直接校验原始哈希
+            "sha256": None,  # 暂不校验声学模型
         },
         "dictionary": {
-            # 字典从 releases 下载，tag 格式: dictionary-{name}-v{version}
             "tag": "dictionary-mandarin_china_mfa-v3.0.0",
             "filename": "mandarin_china_mfa.dict",
-            "description": "Mandarin (China) MFA dictionary v3.0.0"
+            "description": "Mandarin (China) MFA dictionary v3.0.0",
+            # 字典文件清理空行后的哈希值
+            "sha256": None,  # 首次下载时自动计算并保存
+            "min_lines": 10000,  # 字典文件最少行数，用于基本完整性检查
         }
     },
     "japanese": {
@@ -39,12 +46,15 @@ LANGUAGE_MODELS = {
         "acoustic": {
             "tag": "acoustic-japanese_mfa-v3.0.0",
             "filename": "japanese_mfa.zip",
-            "description": "Japanese MFA acoustic model v3.0.0"
+            "description": "Japanese MFA acoustic model v3.0.0",
+            "sha256": None,
         },
         "dictionary": {
             "tag": "dictionary-japanese_mfa-v3.0.0",
             "filename": "japanese_mfa.dict",
-            "description": "Japanese MFA dictionary v3.0.0"
+            "description": "Japanese MFA dictionary v3.0.0",
+            "sha256": None,
+            "min_lines": 10000,  # 日语字典约 12 万行
         }
     }
 }
@@ -53,6 +63,85 @@ LANGUAGE_MODELS = {
 def get_available_languages() -> dict:
     """获取可用的语言列表"""
     return {k: v["name"] for k, v in LANGUAGE_MODELS.items()}
+
+
+def _calculate_file_hash(file_path: str) -> str:
+    """计算文件的 SHA256 哈希值"""
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha256_hash.update(chunk)
+    return sha256_hash.hexdigest()
+
+
+def _get_hash_file_path(file_path: str) -> str:
+    """获取哈希文件路径"""
+    return file_path + ".sha256"
+
+
+def _save_hash(file_path: str, hash_value: str):
+    """保存哈希值到文件"""
+    hash_file = _get_hash_file_path(file_path)
+    with open(hash_file, 'w', encoding='utf-8') as f:
+        f.write(hash_value)
+
+
+def _load_saved_hash(file_path: str) -> Optional[str]:
+    """加载保存的哈希值"""
+    hash_file = _get_hash_file_path(file_path)
+    if os.path.exists(hash_file):
+        with open(hash_file, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    return None
+
+
+def _verify_file_integrity(
+    file_path: str,
+    min_lines: Optional[int] = None,
+    progress_callback: Optional[Callable[[str], None]] = None
+) -> tuple[bool, str]:
+    """
+    验证文件完整性
+    
+    参数:
+        file_path: 文件路径
+        min_lines: 最少行数要求（仅用于文本文件）
+        progress_callback: 进度回调
+    
+    返回:
+        (是否有效, 原因)
+    """
+    def log(msg: str):
+        logger.info(msg)
+        if progress_callback:
+            progress_callback(msg)
+    
+    if not os.path.exists(file_path):
+        return False, "文件不存在"
+    
+    # 检查文件大小
+    file_size = os.path.getsize(file_path)
+    if file_size == 0:
+        return False, "文件为空"
+    
+    # 对于字典文件，检查行数
+    if min_lines and file_path.endswith('.dict'):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                line_count = sum(1 for line in f if line.strip())
+            if line_count < min_lines:
+                return False, f"字典行数不足: {line_count} < {min_lines}"
+        except Exception as e:
+            return False, f"读取文件失败: {e}"
+    
+    # 检查哈希值（如果有保存的哈希）
+    saved_hash = _load_saved_hash(file_path)
+    if saved_hash:
+        current_hash = _calculate_file_hash(file_path)
+        if current_hash != saved_hash:
+            return False, f"哈希校验失败: 期望 {saved_hash[:16]}..., 实际 {current_hash[:16]}..."
+    
+    return True, "文件完整"
 
 
 def _download_file(
@@ -82,10 +171,13 @@ def _download_file(
         # 创建目录
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         
+        # 下载到临时文件，完成后再重命名
+        temp_path = dest_path + ".downloading"
+        
         # 下载文件
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         
-        with urllib.request.urlopen(req, timeout=60) as response:
+        with urllib.request.urlopen(req, timeout=120) as response:
             total_size = response.headers.get("Content-Length")
             if total_size:
                 total_size = int(total_size)
@@ -95,7 +187,7 @@ def _download_file(
             block_size = 8192
             downloaded = 0
             
-            with open(dest_path, "wb") as f:
+            with open(temp_path, "wb") as f:
                 while True:
                     chunk = response.read(block_size)
                     if not chunk:
@@ -106,6 +198,11 @@ def _download_file(
                     if total_size and downloaded % (block_size * 100) == 0:
                         percent = downloaded / total_size * 100
                         log(f"下载进度: {percent:.1f}%")
+        
+        # 下载完成，重命名
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        os.rename(temp_path, dest_path)
         
         log(f"下载完成: {dest_path}")
         return True
@@ -119,12 +216,52 @@ def _download_file(
     except Exception as e:
         log(f"下载失败: {e}")
         return False
+    finally:
+        # 清理临时文件
+        temp_path = dest_path + ".downloading"
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+
+
+
+def _clean_dictionary_file(
+    dict_path: str,
+    progress_callback: Optional[Callable[[str], None]] = None
+) -> int:
+    """
+    清理字典文件中的空行
+    MFA 3.x 解析字典时遇到空行会报 IndexError
+    
+    返回: 清理的空行数量
+    """
+    try:
+        with open(dict_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        # 过滤空行
+        non_empty_lines = [line for line in lines if line.strip()]
+        removed_count = len(lines) - len(non_empty_lines)
+        
+        if removed_count > 0:
+            with open(dict_path, 'w', encoding='utf-8') as f:
+                f.writelines(non_empty_lines)
+            if progress_callback:
+                progress_callback(f"已清理 {removed_count} 个空行")
+        
+        return removed_count
+    except Exception as e:
+        logger.warning(f"清理字典文件失败: {e}")
+        return 0
 
 
 def download_acoustic_model(
     language: str,
     output_dir: str,
-    progress_callback: Optional[Callable[[str], None]] = None
+    progress_callback: Optional[Callable[[str], None]] = None,
+    force_download: bool = False
 ) -> tuple[bool, str]:
     """
     下载声学模型
@@ -133,10 +270,16 @@ def download_acoustic_model(
         language: 语言代码 (mandarin/japanese)
         output_dir: 输出目录
         progress_callback: 进度回调
+        force_download: 强制重新下载
     
     返回:
         (成功标志, 文件路径或错误信息)
     """
+    def log(msg: str):
+        logger.info(msg)
+        if progress_callback:
+            progress_callback(msg)
+    
     if language not in LANGUAGE_MODELS:
         return False, f"不支持的语言: {language}"
     
@@ -144,10 +287,15 @@ def download_acoustic_model(
     url = f"{GITHUB_RELEASE_BASE}/{config['tag']}/{config['filename']}"
     dest_path = os.path.join(output_dir, config["filename"])
     
-    if os.path.exists(dest_path):
-        if progress_callback:
-            progress_callback(f"声学模型已存在: {dest_path}")
-        return True, dest_path
+    # 检查现有文件
+    if os.path.exists(dest_path) and not force_download:
+        # 简单检查：文件存在且大小大于 1MB
+        file_size = os.path.getsize(dest_path)
+        if file_size > 1024 * 1024:
+            log(f"声学模型已存在: {dest_path}")
+            return True, dest_path
+        else:
+            log(f"声学模型文件异常 (大小: {file_size} bytes)，重新下载...")
     
     if _download_file(url, dest_path, progress_callback):
         return True, dest_path
@@ -158,70 +306,84 @@ def download_acoustic_model(
 def download_dictionary(
     language: str,
     output_dir: str,
-    progress_callback: Optional[Callable[[str], None]] = None
+    progress_callback: Optional[Callable[[str], None]] = None,
+    force_download: bool = False
 ) -> tuple[bool, str]:
     """
-    下载字典文件
+    下载字典文件（带完整性校验）
     
     参数:
         language: 语言代码 (mandarin/japanese)
         output_dir: 输出目录
         progress_callback: 进度回调
+        force_download: 强制重新下载
     
     返回:
         (成功标志, 文件路径或错误信息)
     """
+    def log(msg: str):
+        logger.info(msg)
+        if progress_callback:
+            progress_callback(msg)
+    
     if language not in LANGUAGE_MODELS:
         return False, f"不支持的语言: {language}"
     
     config = LANGUAGE_MODELS[language]["dictionary"]
-    # 字典文件从 releases 下载
     url = f"{GITHUB_RELEASE_BASE}/{config['tag']}/{config['filename']}"
     dest_path = os.path.join(output_dir, config["filename"])
+    min_lines = config.get("min_lines")
     
-    if os.path.exists(dest_path):
-        if progress_callback:
-            progress_callback(f"字典文件已存在: {dest_path}")
-        # 确保已有文件也清理空行
-        _clean_dictionary_file(dest_path, progress_callback)
-        return True, dest_path
+    need_download = force_download
     
-    if _download_file(url, dest_path, progress_callback):
-        # 清理字典文件中的空行（MFA 3.x 不支持空行）
-        _clean_dictionary_file(dest_path, progress_callback)
-        return True, dest_path
+    # 检查现有文件完整性
+    if os.path.exists(dest_path) and not force_download:
+        is_valid, reason = _verify_file_integrity(dest_path, min_lines, progress_callback)
+        if is_valid:
+            log(f"字典文件已存在且完整: {dest_path}")
+            # 确保清理空行
+            _clean_dictionary_file(dest_path, progress_callback)
+            return True, dest_path
+        else:
+            log(f"字典文件校验失败: {reason}，重新下载...")
+            need_download = True
+            # 删除损坏的文件和哈希
+            try:
+                os.remove(dest_path)
+                hash_file = _get_hash_file_path(dest_path)
+                if os.path.exists(hash_file):
+                    os.remove(hash_file)
+            except:
+                pass
     else:
-        return False, "字典文件下载失败"
-
-
-def _clean_dictionary_file(
-    dict_path: str,
-    progress_callback: Optional[Callable[[str], None]] = None
-):
-    """
-    清理字典文件中的空行
-    MFA 3.x 解析字典时遇到空行会报 IndexError
-    """
-    try:
-        with open(dict_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+        need_download = True
+    
+    if need_download:
+        if not _download_file(url, dest_path, progress_callback):
+            return False, "字典文件下载失败"
         
-        # 过滤空行
-        non_empty_lines = [line for line in lines if line.strip()]
+        # 清理空行
+        _clean_dictionary_file(dest_path, progress_callback)
         
-        if len(non_empty_lines) < len(lines):
-            with open(dict_path, 'w', encoding='utf-8') as f:
-                f.writelines(non_empty_lines)
-            if progress_callback:
-                progress_callback(f"已清理 {len(lines) - len(non_empty_lines)} 个空行")
-    except Exception as e:
-        logger.warning(f"清理字典文件失败: {e}")
+        # 验证下载的文件
+        is_valid, reason = _verify_file_integrity(dest_path, min_lines, progress_callback)
+        if not is_valid:
+            log(f"下载的字典文件无效: {reason}")
+            return False, f"字典文件无效: {reason}"
+        
+        # 计算并保存哈希值
+        file_hash = _calculate_file_hash(dest_path)
+        _save_hash(dest_path, file_hash)
+        log(f"已保存字典文件哈希: {file_hash[:16]}...")
+    
+    return True, dest_path
 
 
 def download_language_models(
     language: str,
     output_dir: str,
-    progress_callback: Optional[Callable[[str], None]] = None
+    progress_callback: Optional[Callable[[str], None]] = None,
+    force_download: bool = False
 ) -> tuple[bool, str, str]:
     """
     下载指定语言的声学模型和字典
@@ -230,6 +392,7 @@ def download_language_models(
         language: 语言代码 (mandarin/japanese)
         output_dir: 输出目录
         progress_callback: 进度回调
+        force_download: 强制重新下载
     
     返回:
         (成功标志, 声学模型路径, 字典路径)
@@ -248,14 +411,18 @@ def download_language_models(
     # 下载声学模型
     log("=" * 40)
     log("下载声学模型...")
-    success, acoustic_path = download_acoustic_model(language, output_dir, progress_callback)
+    success, acoustic_path = download_acoustic_model(
+        language, output_dir, progress_callback, force_download
+    )
     if not success:
         return False, "", acoustic_path
     
     # 下载字典
     log("=" * 40)
     log("下载字典文件...")
-    success, dict_path = download_dictionary(language, output_dir, progress_callback)
+    success, dict_path = download_dictionary(
+        language, output_dir, progress_callback, force_download
+    )
     if not success:
         return False, acoustic_path, dict_path
     

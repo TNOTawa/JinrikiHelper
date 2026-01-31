@@ -100,6 +100,31 @@ def _build_mfa_env() -> dict:
     return env
 
 
+def _clean_dict_empty_lines(dict_path: str) -> int:
+    """
+    清理字典文件中的空行
+    MFA 3.x 解析字典时遇到空行会报 IndexError
+    
+    返回: 清理的空行数量
+    """
+    try:
+        with open(dict_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        # 过滤空行
+        non_empty_lines = [line for line in lines if line.strip()]
+        removed_count = len(lines) - len(non_empty_lines)
+        
+        if removed_count > 0:
+            with open(dict_path, 'w', encoding='utf-8') as f:
+                f.writelines(non_empty_lines)
+        
+        return removed_count
+    except Exception as e:
+        logger.warning(f"清理字典文件空行失败: {e}")
+        return 0
+
+
 def run_mfa_alignment(
     corpus_dir: str,
     output_dir: str,
@@ -148,6 +173,11 @@ def run_mfa_alignment(
         return False, f"字典文件不存在: {dict_path}"
     if not os.path.isfile(model_path):
         return False, f"声学模型不存在: {model_path}"
+    
+    # 清理字典文件中的空行（MFA 3.x 不支持空行）
+    removed = _clean_dict_empty_lines(dict_path)
+    if removed > 0:
+        log(f"已清理字典文件中的 {removed} 个空行")
     
     # 创建输出和临时目录
     os.makedirs(output_dir, exist_ok=True)
