@@ -103,10 +103,10 @@ def main():
     """主入口"""
     setup_environment()
     
-    # 导入并启动 GUI
-    from src.gui import create_ui
+    # 导入并启动云端 GUI
+    from src.gui_cloud import create_cloud_ui
     
-    app = create_ui()
+    app = create_cloud_ui()
     
     # 云端配置
     app.launch(

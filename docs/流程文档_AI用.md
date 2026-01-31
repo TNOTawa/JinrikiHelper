@@ -37,7 +37,8 @@
 
 ```
 项目根目录/
-├── main.py                 # 程序入口
+├── main.py                 # 程序入口 (Web UI)
+├── main_local.py           # 本地桌面入口 (CustomTkinter GUI)
 ├── config.json             # 全局配置文件
 ├── bank/                   # 音源库目录
 │   └── [音源名称]/
@@ -220,7 +221,7 @@ MFA 支持两种运行模式:
 
 ## 使用流程
 
-### 方式一: 本地 Web UI
+### 方式一: 本地 Web UI (Gradio)
 
 1. 运行 `python main.py` 启动 Web UI
 2. 浏览器自动打开 http://127.0.0.1:7860
@@ -239,9 +240,15 @@ MFA 支持两种运行模式:
    - 配置导出选项并执行
    - 点击下载按钮获取结果
 
-> 注: 旧版 CustomTkinter 桌面 GUI 已移至 `src/gui_old.py`
+> 注: 旧版 CustomTkinter 桌面 GUI 已移至 `src/gui_old.py`，可通过 `python main_local.py` 启动
 
-### 方式二: 云端部署 (HF Spaces / 魔塔社区)
+### 方式二: 本地桌面 GUI (CustomTkinter)
+
+1. 运行 `python main_local.py` 启动桌面应用
+2. 使用原生窗口界面操作，功能与 Web UI 相同
+3. 适合不需要浏览器的本地独立运行场景
+
+### 方式三: 云端部署 (HF Spaces / 魔塔社区)
 
 1. 使用 `app.py` 作为入口文件
 2. 云端环境自动安装 MFA 和下载模型
@@ -251,7 +258,7 @@ MFA 支持两种运行模式:
 - Hugging Face Spaces (Gradio SDK)
 - 魔塔社区 ModelScope (推荐，国内访问快)
 
-### 方式三: 命令行/脚本
+### 方式四: 命令行/脚本
 
 ```python
 from src.pipeline import PipelineConfig, VoiceBankPipeline
@@ -295,15 +302,24 @@ MFA 环境:
 
 ```
 项目根目录/
-├── app.py                  # 云端入口 (自动初始化环境)
-├── main.py                 # 本地入口
+├── app.py                  # 云端入口 (使用 gui_cloud.py)
+├── main.py                 # 本地入口 (使用 gui.py)
 ├── requirements.txt
 ├── src/
-│   ├── gui.py              # 支持云端环境检测和下载功能
+│   ├── gui.py              # 本地 Web UI (完整功能)
+│   ├── gui_cloud.py        # 云端 Web UI (上传→处理→下载)
+│   ├── gui_old.py          # 旧版桌面 GUI (CustomTkinter)
 │   ├── mfa_runner.py       # 跨平台 MFA 调用
 │   └── ...
 └── ...
 ```
+
+### 云端 GUI 特点 (gui_cloud.py)
+
+- **制作音源**: 上传音频文件 → VAD切片 + Whisper转录 + MFA对齐 → 下载音源包
+- **导出音源**: 上传音源包 → 选择导出插件 → 下载导出结果
+- 使用临时工作空间，处理完成后自动清理
+- 无需本地持久化存储
 
 ### 平台差异
 
