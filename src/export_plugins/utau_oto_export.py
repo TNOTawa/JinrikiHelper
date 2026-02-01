@@ -68,6 +68,26 @@ JAPANESE_VOWELS = {
 # 跳过的标记
 SKIP_MARKS = {'', 'SP', 'AP', '<unk>', 'spn', 'sil'}
 
+# ==================== 模糊拼字近似音素对照表 ====================
+
+# 声母近似组（同组内音素互为替代，按优先级排序）
+FUZZY_CONSONANT_GROUPS = [
+    ('sh', 's'),       # 翘舌/平舌
+    ('zh', 'z'),       # 翘舌/平舌
+    ('ch', 'c'),       # 翘舌/平舌
+    ('l', 'n', 'r'),   # 边音/鼻音/卷舌
+    ('f', 'h'),        # 唇齿/喉音
+]
+
+# 韵母近似组（同组内音素互为替代，按优先级排序）
+FUZZY_VOWEL_GROUPS = [
+    ('an', 'ang'),       # 前鼻/后鼻
+    ('en', 'eng', 'ong'), # 前鼻/后鼻/后鼻圆唇
+    ('in', 'ing'),       # 前鼻/后鼻
+    ('ian', 'iang'),     # 前鼻/后鼻
+    ('uan', 'uang'),     # 前鼻/后鼻
+]
+
 
 def is_consonant(phone: str, language: str) -> bool:
     """判断音素是否为辅音"""
@@ -293,7 +313,25 @@ class UTAUOtoExportPlugin(ExportPlugin):
                 label="自动拼字",
                 option_type=OptionType.SWITCH,
                 default=False,
-                description="【TODO】尽可能用已有的音素拆分拼接成缺失的音素"
+                description="用已有的高质量音素拼接生成缺失的音素组合"
+            ),
+            PluginOption(
+                key="crossfade_ms",
+                label="拼接淡入淡出时长(ms)",
+                option_type=OptionType.NUMBER,
+                default=10,
+                min_value=5,
+                max_value=50,
+                description="自动拼字时辅音与元音之间的交叉淡化时长",
+                visible_when={"auto_phoneme_combine": True}
+            ),
+            PluginOption(
+                key="fuzzy_phoneme",
+                label="模糊拼字",
+                option_type=OptionType.SWITCH,
+                default=False,
+                description="用近似声母/韵母替代缺失音素（如 sh↔s, an↔ang），仅中文有效",
+                visible_when={"auto_phoneme_combine": True}
             ),
             PluginOption(
                 key="encoding",
@@ -332,6 +370,9 @@ class UTAUOtoExportPlugin(ExportPlugin):
             overlap_ratio = float(options.get("overlap_ratio", 0.3))
             encoding = options.get("encoding", "utf-8")
             character_name = options.get("character_name", "").strip()
+            auto_phoneme_combine = options.get("auto_phoneme_combine", False)
+            crossfade_ms = int(options.get("crossfade_ms", 10))
+            fuzzy_phoneme = options.get("fuzzy_phoneme", False)
             use_hiragana = (alias_style == "hiragana") and language in ('japanese', 'ja', 'jp')
             
             # 使用基类方法解析质量评估维度
@@ -365,6 +406,28 @@ class UTAUOtoExportPlugin(ExportPlugin):
             )
             self._log(f"筛选后保留 {len(filtered_entries)} 条配置，涉及 {len(used_wavs)} 个音频文件")
             
+            # 步骤2.5: 自动拼字（如果启用）
+            combined_count = 0
+            if auto_phoneme_combine:
+                self._log("\n【自动拼字】")
+                combined_entries, combined_wavs = self._auto_combine_phonemes(
+                    oto_entries,
+                    filtered_entries,
+                    paths["slices_dir"],
+                    export_dir,
+                    language,
+                    use_hiragana,
+                    overlap_ratio,
+                    crossfade_ms,
+                    first_naming_rule,
+                    fuzzy_phoneme
+                )
+                if combined_entries:
+                    filtered_entries.extend(combined_entries)
+                    used_wavs.update(combined_wavs)
+                    combined_count = len(combined_entries)
+                    self._log(f"拼接生成 {combined_count} 条新配置")
+            
             # 步骤3: 复制音频文件（自动检测文件名是否需要转拼音）
             self._log("\n【复制音频文件】")
             copied, filename_map = self._copy_wav_files(
@@ -388,7 +451,10 @@ class UTAUOtoExportPlugin(ExportPlugin):
             
             # 统计别名数量
             unique_aliases = set(e["alias"] for e in filtered_entries)
-            return True, f"导出完成: {export_dir}\n{len(unique_aliases)} 个别名，{len(filtered_entries)} 条配置，{copied} 个音频"
+            result_msg = f"导出完成: {export_dir}\n{len(unique_aliases)} 个别名，{len(filtered_entries)} 条配置，{copied} 个音频"
+            if combined_count > 0:
+                result_msg += f"\n（其中 {combined_count} 条为自动拼接生成）"
+            return True, result_msg
             
         except Exception as e:
             logger.error(f"UTAU oto.ini 导出失败: {e}", exc_info=True)
@@ -901,3 +967,682 @@ class UTAUOtoExportPlugin(ExportPlugin):
         
         with open(output_path, 'w', encoding=encoding) as f:
             f.write(f"name={name_to_write}")
+
+    # ==================== 自动拼字功能 ====================
+    
+    def _auto_combine_phonemes(
+        self,
+        all_entries: List[Dict],
+        filtered_entries: List[Dict],
+        slices_dir: str,
+        export_dir: str,
+        language: str,
+        use_hiragana: bool,
+        overlap_ratio: float,
+        crossfade_ms: int,
+        first_naming_rule: str,
+        fuzzy_phoneme: bool = False
+    ) -> Tuple[List[Dict], set]:
+        """
+        自动拼字：用已有音素拼接生成缺失的音素组合
+        
+        参数:
+            all_entries: 所有原始 oto 条目（用于提取音素片段）
+            filtered_entries: 已筛选的条目（用于确定已有别名）
+            slices_dir: 切片目录
+            export_dir: 导出目录
+            language: 语言
+            use_hiragana: 是否使用平假名
+            overlap_ratio: overlap 比例
+            crossfade_ms: 交叉淡化时长
+            first_naming_rule: 首个样本命名规则
+            fuzzy_phoneme: 是否启用模糊拼字（仅中文有效）
+        
+        返回:
+            (新生成的条目列表, 新生成的 wav 文件名集合)
+        """
+        import numpy as np
+        import soundfile as sf
+        
+        # 步骤1: 收集已有别名
+        existing_aliases = set()
+        for entry in filtered_entries:
+            # 提取基础别名（去除序号后缀）
+            alias = entry.get("alias", "")
+            if alias:
+                existing_aliases.add(alias)
+        
+        self._log(f"已有 {len(existing_aliases)} 个别名")
+        
+        # 步骤2: 从原始条目中提取最佳辅音和元音片段
+        consonant_segments, vowel_segments = self._collect_phoneme_segments(
+            all_entries, slices_dir, language
+        )
+        
+        self._log(f"收集到 {len(consonant_segments)} 个辅音, {len(vowel_segments)} 个元音")
+        
+        if not consonant_segments or not vowel_segments:
+            self._log("音素不足，跳过自动拼字")
+            return [], set()
+        
+        # 步骤3: 生成候选组合并过滤
+        # 模糊拼字仅对中文生效
+        enable_fuzzy = fuzzy_phoneme and language in ('chinese', 'zh', 'mandarin')
+        candidates = self._generate_candidates(
+            consonant_segments, vowel_segments,
+            existing_aliases, language, use_hiragana,
+            enable_fuzzy
+        )
+        
+        if not candidates:
+            self._log("无缺失的有效组合")
+            return [], set()
+        
+        self._log(f"发现 {len(candidates)} 个缺失组合，开始拼接...")
+        
+        # 步骤4: 执行音频拼接
+        new_entries = []
+        new_wavs = set()
+        success_count = 0
+        fail_count = 0
+        
+        for candidate in candidates:
+            try:
+                entry, wav_name = self._combine_and_save(
+                    candidate,
+                    slices_dir,
+                    export_dir,
+                    overlap_ratio,
+                    crossfade_ms,
+                    first_naming_rule
+                )
+                if entry:
+                    new_entries.append(entry)
+                    new_wavs.add(wav_name)
+                    success_count += 1
+            except Exception as e:
+                logger.warning(f"拼接失败 {candidate['alias']}: {e}")
+                fail_count += 1
+        
+        if fail_count > 0:
+            self._log(f"拼接完成: 成功 {success_count}, 失败 {fail_count}")
+        
+        return new_entries, new_wavs
+    
+    def _collect_phoneme_segments(
+        self,
+        entries: List[Dict],
+        slices_dir: str,
+        language: str
+    ) -> Tuple[Dict[str, Dict], Dict[str, Dict]]:
+        """
+        从条目中收集辅音和元音片段信息
+        
+        返回:
+            (辅音字典, 元音字典)
+            每个字典: {IPA音素: {wav_path, offset_ms, duration_ms, quality_score}}
+        """
+        import soundfile as sf
+        
+        consonant_segments: Dict[str, List[Dict]] = defaultdict(list)
+        vowel_segments: Dict[str, List[Dict]] = defaultdict(list)
+        
+        for entry in entries:
+            wav_name = entry.get("wav_name", "")
+            wav_path = os.path.join(slices_dir, wav_name)
+            
+            if not os.path.exists(wav_path):
+                continue
+            
+            # 从条目中提取原始音素信息（如果有）
+            # 这里需要重新解析，因为原始条目可能没有保存 IPA 信息
+            # 我们使用 alias 反推（简化处理）
+            alias = entry.get("alias", "")
+            offset = entry.get("offset", 0)
+            consonant_dur = entry.get("consonant", 0)
+            segment_dur = entry.get("segment_duration", 0)
+            quality = entry.get("quality_score", 0.5)
+            
+            # 尝试分离辅音和元音部分
+            c_part, v_part = self._split_alias_to_cv(alias, language)
+            
+            if c_part:
+                consonant_segments[c_part].append({
+                    "wav_path": wav_path,
+                    "offset_ms": offset,
+                    "duration_ms": consonant_dur,
+                    "quality_score": quality,
+                    "ipa": c_part
+                })
+            
+            if v_part:
+                # 元音从辅音结束位置开始
+                v_offset = offset + consonant_dur
+                v_duration = segment_dur - consonant_dur
+                if v_duration > 0:
+                    vowel_segments[v_part].append({
+                        "wav_path": wav_path,
+                        "offset_ms": v_offset,
+                        "duration_ms": v_duration,
+                        "quality_score": quality,
+                        "ipa": v_part
+                    })
+        
+        # 选择最佳音素
+        # 辅音：从质量前5中选择时长最接近中位数的（避免过长或过短）
+        # 元音：从质量前5中选择时长最长的（避免UTAU过度拉伸）
+        best_consonants = {}
+        for ipa, segments in consonant_segments.items():
+            if segments:
+                best_consonants[ipa] = self._select_best_consonant(segments)
+        
+        best_vowels = {}
+        for ipa, segments in vowel_segments.items():
+            if segments:
+                best_vowels[ipa] = self._select_best_vowel(segments)
+        
+        return best_consonants, best_vowels
+    
+    def _select_best_consonant(self, segments: List[Dict]) -> Dict:
+        """
+        选择最佳辅音片段
+        
+        策略：从质量排名前5中选择时长最接近中位数的
+        （辅音不宜过长也不宜过短）
+        """
+        # 按质量排序，取前5
+        sorted_by_quality = sorted(segments, key=lambda x: -x["quality_score"])
+        top_candidates = sorted_by_quality[:5]
+        
+        if len(top_candidates) == 1:
+            return top_candidates[0]
+        
+        # 计算这些候选的时长中位数
+        durations = [s["duration_ms"] for s in top_candidates]
+        durations.sort()
+        median_duration = durations[len(durations) // 2]
+        
+        # 选择最接近中位数的
+        best = min(top_candidates, key=lambda x: abs(x["duration_ms"] - median_duration))
+        return best
+    
+    def _select_best_vowel(self, segments: List[Dict]) -> Dict:
+        """
+        选择最佳元音片段
+        
+        策略：从质量排名前5中选择时长最长的
+        （元音过短会导致UTAU过度拉伸）
+        """
+        # 按质量排序，取前5
+        sorted_by_quality = sorted(segments, key=lambda x: -x["quality_score"])
+        top_candidates = sorted_by_quality[:5]
+        
+        # 从中选择时长最长的
+        best = max(top_candidates, key=lambda x: x["duration_ms"])
+        return best
+    
+    def _split_alias_to_cv(
+        self,
+        alias: str,
+        language: str
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        将别名拆分为辅音和元音部分
+        
+        参数:
+            alias: 别名（拼音、罗马音或平假名）
+            language: 语言
+        
+        返回:
+            (辅音部分, 元音部分) - 始终返回罗马音格式
+        """
+        if not alias:
+            return None, None
+        
+        # 如果是平假名，先转换为罗马音
+        alias_to_split = self._hiragana_to_romaji(alias)
+        if alias_to_split is None:
+            alias_to_split = alias.lower()
+        
+        if language in ('chinese', 'zh', 'mandarin'):
+            # 中文拼音辅音列表（按长度降序排列以优先匹配长的）
+            consonants = [
+                'zh', 'ch', 'sh', 'ng',
+                'b', 'p', 'm', 'f',
+                'd', 't', 'n', 'l',
+                'g', 'k', 'h',
+                'j', 'q', 'x',
+                'z', 'c', 's', 'r',
+                'y', 'w'
+            ]
+        else:
+            # 日语罗马音辅音
+            consonants = [
+                'ch', 'sh', 'ts', 'ny',
+                'ky', 'gy', 'py', 'by', 'my', 'ry', 'hy',
+                'k', 'g', 's', 'z', 't', 'd', 'n', 'h', 'b', 'p', 'm', 'r', 'w', 'y', 'f', 'j'
+            ]
+        
+        # 尝试匹配辅音
+        for c in consonants:
+            if alias_to_split.startswith(c):
+                vowel = alias_to_split[len(c):]
+                if vowel:  # 确保有元音部分
+                    return c, vowel
+                else:
+                    return c, None
+        
+        # 没有辅音，整个是元音
+        return None, alias_to_split
+    
+    def _hiragana_to_romaji(self, text: str) -> Optional[str]:
+        """
+        将平假名转换为罗马音
+        
+        参数:
+            text: 平假名文本
+        
+        返回:
+            罗马音，如果无法转换则返回 None
+        """
+        # 平假名到罗马音映射（ROMAJI_TO_HIRAGANA 的反向映射）
+        hiragana_to_romaji_map = {
+            # 基本元音
+            'あ': 'a', 'い': 'i', 'う': 'u', 'え': 'e', 'お': 'o',
+            # か行
+            'か': 'ka', 'き': 'ki', 'く': 'ku', 'け': 'ke', 'こ': 'ko',
+            # さ行
+            'さ': 'sa', 'し': 'shi', 'す': 'su', 'せ': 'se', 'そ': 'so',
+            # た行
+            'た': 'ta', 'ち': 'chi', 'つ': 'tsu', 'て': 'te', 'と': 'to',
+            # な行
+            'な': 'na', 'に': 'ni', 'ぬ': 'nu', 'ね': 'ne', 'の': 'no',
+            # は行
+            'は': 'ha', 'ひ': 'hi', 'ふ': 'fu', 'へ': 'he', 'ほ': 'ho',
+            # ま行
+            'ま': 'ma', 'み': 'mi', 'む': 'mu', 'め': 'me', 'も': 'mo',
+            # や行
+            'や': 'ya', 'ゆ': 'yu', 'よ': 'yo',
+            # ら行
+            'ら': 'ra', 'り': 'ri', 'る': 'ru', 'れ': 're', 'ろ': 'ro',
+            # わ行
+            'わ': 'wa', 'を': 'wo', 'ん': 'n',
+            # が行
+            'が': 'ga', 'ぎ': 'gi', 'ぐ': 'gu', 'げ': 'ge', 'ご': 'go',
+            # ざ行
+            'ざ': 'za', 'じ': 'ji', 'ず': 'zu', 'ぜ': 'ze', 'ぞ': 'zo',
+            # だ行
+            'だ': 'da', 'ぢ': 'di', 'づ': 'du', 'で': 'de', 'ど': 'do',
+            # ば行
+            'ば': 'ba', 'び': 'bi', 'ぶ': 'bu', 'べ': 'be', 'ぼ': 'bo',
+            # ぱ行
+            'ぱ': 'pa', 'ぴ': 'pi', 'ぷ': 'pu', 'ぺ': 'pe', 'ぽ': 'po',
+            # 拗音
+            'きゃ': 'kya', 'きゅ': 'kyu', 'きょ': 'kyo',
+            'しゃ': 'sha', 'しゅ': 'shu', 'しょ': 'sho',
+            'ちゃ': 'cha', 'ちゅ': 'chu', 'ちょ': 'cho',
+            'にゃ': 'nya', 'にゅ': 'nyu', 'にょ': 'nyo',
+            'ひゃ': 'hya', 'ひゅ': 'hyu', 'ひょ': 'hyo',
+            'みゃ': 'mya', 'みゅ': 'myu', 'みょ': 'myo',
+            'りゃ': 'rya', 'りゅ': 'ryu', 'りょ': 'ryo',
+            'ぎゃ': 'gya', 'ぎゅ': 'gyu', 'ぎょ': 'gyo',
+            'じゃ': 'ja', 'じゅ': 'ju', 'じょ': 'jo',
+            'びゃ': 'bya', 'びゅ': 'byu', 'びょ': 'byo',
+            'ぴゃ': 'pya', 'ぴゅ': 'pyu', 'ぴょ': 'pyo',
+        }
+        
+        # 去除数字后缀
+        base_text = text.rstrip('0123456789')
+        
+        # 直接查找
+        if base_text in hiragana_to_romaji_map:
+            return hiragana_to_romaji_map[base_text]
+        
+        # 如果是纯 ASCII，直接返回小写
+        if base_text.isascii():
+            return base_text.lower()
+        
+        return None
+    
+    def _generate_candidates(
+        self,
+        consonants: Dict[str, Dict],
+        vowels: Dict[str, Dict],
+        existing_aliases: set,
+        language: str,
+        use_hiragana: bool,
+        fuzzy_phoneme: bool = False
+    ) -> List[Dict]:
+        """
+        生成缺失的候选组合
+        
+        参数:
+            consonants: 可用辅音字典
+            vowels: 可用元音字典
+            existing_aliases: 已存在的别名集合
+            language: 语言
+            use_hiragana: 是否使用平假名
+            fuzzy_phoneme: 是否启用模糊拼字
+        
+        返回:
+            候选列表，每个候选包含 {alias, consonant_info, vowel_info}
+        """
+        candidates = []
+        
+        # 获取有效的元音列表（用于验证组合）
+        if language in ('chinese', 'zh', 'mandarin'):
+            valid_vowels = {'a', 'o', 'e', 'i', 'u', 'v', 'ai', 'ei', 'ao', 'ou', 'an', 'en', 'ang', 'eng', 'ong', 'er'}
+        else:
+            valid_vowels = {'a', 'i', 'u', 'e', 'o'}
+        
+        # 构建可用音素集合（用于模糊匹配）
+        available_consonants = set(consonants.keys())
+        available_vowels = set(vowels.keys())
+        
+        # 辅音 + 元音组合
+        for c_alias, c_info in consonants.items():
+            for v_alias, v_info in vowels.items():
+                # 确保辅音和元音都是罗马音格式（小写ASCII）
+                c_romaji = c_alias.lower() if c_alias.isascii() else None
+                v_romaji = v_alias.lower() if v_alias.isascii() else None
+                
+                # 跳过非罗马音的音素（如已经是平假名的）
+                if c_romaji is None or v_romaji is None:
+                    continue
+                
+                combined_romaji = c_romaji + v_romaji
+                
+                # 检查组合是否合理（简单验证）
+                if v_romaji not in valid_vowels and len(v_romaji) > 2:
+                    continue
+                
+                # 转换为最终别名格式
+                if use_hiragana:
+                    final_alias = ROMAJI_TO_HIRAGANA.get(combined_romaji)
+                    # 如果无法转换为平假名，跳过此组合
+                    if final_alias is None:
+                        continue
+                else:
+                    final_alias = combined_romaji
+                
+                # 检查是否已存在（检查最终别名）
+                if final_alias in existing_aliases:
+                    continue
+                
+                # 同时检查罗马音形式是否已存在
+                if combined_romaji in existing_aliases:
+                    continue
+                
+                candidates.append({
+                    "alias": final_alias,
+                    "base_alias": combined_romaji,  # 始终使用罗马音作为基础
+                    "consonant_info": c_info,
+                    "vowel_info": v_info
+                })
+        
+        # 模糊拼字：生成使用近似音素的额外候选
+        if fuzzy_phoneme and language in ('chinese', 'zh', 'mandarin'):
+            fuzzy_candidates = self._generate_fuzzy_candidates(
+                consonants, vowels,
+                available_consonants, available_vowels,
+                existing_aliases, candidates
+            )
+            candidates.extend(fuzzy_candidates)
+        
+        return candidates
+    
+    def _find_fuzzy_substitute(
+        self,
+        phoneme: str,
+        available_phonemes: set,
+        groups: List[Tuple[str, ...]]
+    ) -> Optional[str]:
+        """
+        查找模糊替代音素
+        
+        参数:
+            phoneme: 目标音素
+            available_phonemes: 可用音素集合
+            groups: 近似音素组列表（同组内音素互为替代）
+        
+        返回:
+            替代音素，如果无法替代则返回 None
+        """
+        # 如果目标音素已存在，直接返回
+        if phoneme in available_phonemes:
+            return phoneme
+        
+        # 查找目标音素所在的近似组
+        for group in groups:
+            if phoneme in group:
+                # 按组内顺序查找可用的替代音素
+                for candidate in group:
+                    if candidate != phoneme and candidate in available_phonemes:
+                        return candidate
+                # 该组内没有可用替代
+                break
+        
+        return None
+    
+    def _generate_fuzzy_candidates(
+        self,
+        consonants: Dict[str, Dict],
+        vowels: Dict[str, Dict],
+        available_consonants: set,
+        available_vowels: set,
+        existing_aliases: set,
+        normal_candidates: List[Dict]
+    ) -> List[Dict]:
+        """
+        生成模糊拼字候选
+        
+        使用近似音素替代缺失的声母/韵母，生成额外的候选组合
+        """
+        fuzzy_candidates = []
+        
+        # 已生成的别名（包括普通候选）
+        generated_aliases = set(c["base_alias"] for c in normal_candidates)
+        generated_aliases.update(existing_aliases)
+        
+        # 中文所有可能的声母
+        all_consonants = ['b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h',
+                          'j', 'q', 'x', 'zh', 'ch', 'sh', 'r', 'z', 'c', 's', 'y', 'w']
+        
+        # 中文所有可能的韵母
+        all_vowels = ['a', 'o', 'e', 'i', 'u', 'v', 'ai', 'ei', 'ao', 'ou',
+                      'an', 'en', 'ang', 'eng', 'ong', 'in', 'ing', 'ian', 'iang',
+                      'uan', 'uang', 'un', 'ia', 'ie', 'iu', 'iao', 'ua', 'uo', 'ui', 'uai']
+        
+        fuzzy_count = 0
+        
+        for target_c in all_consonants:
+            for target_v in all_vowels:
+                target_alias = target_c + target_v
+                
+                # 跳过已存在或已生成的
+                if target_alias in generated_aliases:
+                    continue
+                
+                # 确定实际使用的辅音
+                if target_c in available_consonants:
+                    actual_c = target_c
+                else:
+                    actual_c = self._find_fuzzy_substitute(
+                        target_c, available_consonants, FUZZY_CONSONANT_GROUPS
+                    )
+                
+                # 确定实际使用的元音
+                if target_v in available_vowels:
+                    actual_v = target_v
+                else:
+                    actual_v = self._find_fuzzy_substitute(
+                        target_v, available_vowels, FUZZY_VOWEL_GROUPS
+                    )
+                
+                # 如果辅音或元音无法获取，跳过
+                if actual_c is None or actual_v is None:
+                    continue
+                
+                # 如果实际音素与目标相同，说明不需要模糊替换（普通候选已处理）
+                if actual_c == target_c and actual_v == target_v:
+                    continue
+                
+                # 获取音素信息
+                c_info = consonants.get(actual_c)
+                v_info = vowels.get(actual_v)
+                
+                if c_info is None or v_info is None:
+                    continue
+                
+                fuzzy_candidates.append({
+                    "alias": target_alias,
+                    "base_alias": target_alias,
+                    "consonant_info": c_info,
+                    "vowel_info": v_info,
+                    "is_fuzzy": True,
+                    "fuzzy_from": f"{actual_c}+{actual_v}"
+                })
+                generated_aliases.add(target_alias)
+                fuzzy_count += 1
+        
+        if fuzzy_count > 0:
+            self._log(f"模糊拼字生成 {fuzzy_count} 个额外候选")
+        
+        return fuzzy_candidates
+    
+    def _combine_and_save(
+        self,
+        candidate: Dict,
+        slices_dir: str,
+        export_dir: str,
+        overlap_ratio: float,
+        crossfade_ms: int,
+        first_naming_rule: str
+    ) -> Tuple[Optional[Dict], Optional[str]]:
+        """
+        执行音频拼接并保存
+        
+        参数:
+            candidate: 候选信息
+            slices_dir: 切片目录
+            export_dir: 导出目录
+            overlap_ratio: overlap 比例
+            crossfade_ms: 交叉淡化时长
+            first_naming_rule: 命名规则
+        
+        返回:
+            (oto条目, wav文件名) 或 (None, None)
+        """
+        import numpy as np
+        import soundfile as sf
+        
+        c_info = candidate["consonant_info"]
+        v_info = candidate["vowel_info"]
+        alias = candidate["alias"]
+        
+        # 加载辅音片段
+        c_audio, c_sr = sf.read(c_info["wav_path"])
+        if len(c_audio.shape) > 1:
+            c_audio = c_audio.mean(axis=1)
+        
+        c_start = int(c_info["offset_ms"] / 1000 * c_sr)
+        c_duration = int(c_info["duration_ms"] / 1000 * c_sr)
+        c_segment = c_audio[c_start:c_start + c_duration]
+        
+        # 加载元音片段
+        v_audio, v_sr = sf.read(v_info["wav_path"])
+        if len(v_audio.shape) > 1:
+            v_audio = v_audio.mean(axis=1)
+        
+        v_start = int(v_info["offset_ms"] / 1000 * v_sr)
+        v_duration = int(v_info["duration_ms"] / 1000 * v_sr)
+        v_segment = v_audio[v_start:v_start + v_duration]
+        
+        # 确保采样率一致
+        if c_sr != v_sr:
+            logger.warning(f"采样率不一致: {c_sr} vs {v_sr}，跳过")
+            return None, None
+        
+        sr = c_sr
+        
+        # 检查片段有效性
+        if len(c_segment) == 0 or len(v_segment) == 0:
+            return None, None
+        
+        # 执行交叉淡化拼接
+        crossfade_samples = int(crossfade_ms / 1000 * sr)
+        crossfade_samples = min(crossfade_samples, len(c_segment) // 2, len(v_segment) // 2)
+        
+        if crossfade_samples < 1:
+            crossfade_samples = 1
+        
+        combined = self._crossfade_concat(c_segment, v_segment, crossfade_samples)
+        
+        # 生成文件名（使用 C 前缀表示 Combined）
+        wav_name = f"C{candidate['alias']}.wav"
+        wav_path = os.path.join(export_dir, wav_name)
+        
+        # 保存音频
+        sf.write(wav_path, combined, sr)
+        
+        # 计算 oto 参数
+        c_duration_ms = c_info["duration_ms"]
+        total_duration_ms = len(combined) / sr * 1000
+        
+        # 应用命名规则（作为首个样本）
+        final_alias = self.apply_naming_rule(first_naming_rule, alias, 0) if first_naming_rule else alias
+        
+        entry = {
+            "wav_name": wav_name,
+            "alias": final_alias,
+            "offset": 0,
+            "consonant": round(c_duration_ms, 1),
+            "cutoff": round(-total_duration_ms, 1),
+            "preutterance": round(c_duration_ms, 1),
+            "overlap": round(c_duration_ms * overlap_ratio, 1),
+            "segment_duration": total_duration_ms,
+            "is_combined": True  # 标记为拼接生成
+        }
+        
+        return entry, wav_name
+    
+    def _crossfade_concat(
+        self,
+        audio1: 'np.ndarray',
+        audio2: 'np.ndarray',
+        crossfade_samples: int
+    ) -> 'np.ndarray':
+        """
+        交叉淡化拼接两段音频
+        
+        参数:
+            audio1: 第一段音频
+            audio2: 第二段音频
+            crossfade_samples: 交叉淡化采样数
+        
+        返回:
+            拼接后的音频
+        """
+        import numpy as np
+        
+        if crossfade_samples <= 0:
+            return np.concatenate([audio1, audio2])
+        
+        # 确保交叉淡化长度不超过音频长度
+        crossfade_samples = min(crossfade_samples, len(audio1), len(audio2))
+        
+        # 创建淡入淡出曲线
+        fade_out = np.linspace(1.0, 0.0, crossfade_samples)
+        fade_in = np.linspace(0.0, 1.0, crossfade_samples)
+        
+        # 分离各部分
+        part1 = audio1[:-crossfade_samples]
+        overlap1 = audio1[-crossfade_samples:]
+        overlap2 = audio2[:crossfade_samples]
+        part2 = audio2[crossfade_samples:]
+        
+        # 交叉混合
+        crossfaded = overlap1 * fade_out + overlap2 * fade_in
+        
+        # 拼接
+        return np.concatenate([part1, crossfaded, part2])
