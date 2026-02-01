@@ -146,6 +146,63 @@ class ExportPlugin(ABC):
             "textgrid_dir": os.path.join(source_dir, "textgrid")
         }
     
+    def load_language_from_meta(self, bank_dir: str, source_name: str) -> str:
+        """
+        从 meta.json 加载语言设置
+        
+        参数:
+            bank_dir: bank 目录路径
+            source_name: 音源名称
+        
+        返回:
+            语言代码，默认 "chinese"
+        """
+        import json
+        meta_path = os.path.join(bank_dir, source_name, "meta.json")
+        try:
+            if os.path.exists(meta_path):
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                    language = meta.get("language", "chinese")
+                    self._log(f"语言设置: {language}")
+                    return language
+        except Exception as e:
+            logger.warning(f"读取 meta.json 失败: {e}")
+        return "chinese"
+    
+    def parse_quality_metrics(self, metrics_str: str) -> List[str]:
+        """
+        解析质量评估维度选项
+        
+        参数:
+            metrics_str: 选项字符串，如 "duration", "duration+rms", "all"
+        
+        返回:
+            启用的维度列表
+        """
+        if metrics_str == "all":
+            return ["duration", "rms", "f0"]
+        elif metrics_str == "duration+rms":
+            return ["duration", "rms"]
+        elif metrics_str == "duration+f0":
+            return ["duration", "f0"]
+        else:
+            return ["duration"]
+    
+    def apply_naming_rule(self, rule: str, base_name: str, index: int) -> str:
+        """
+        应用命名规则生成文件名/别名
+        
+        参数:
+            rule: 命名规则，支持 %p%（拼音）和 %n%（序号）
+            base_name: 基础名称（拼音/罗马音）
+            index: 序号
+        
+        返回:
+            生成的名称
+        """
+        return rule.replace("%p%", base_name).replace("%n%", str(index))
+    
     def get_quality_scorer(
         self,
         enabled_metrics: Optional[List[str]] = None,

@@ -469,8 +469,14 @@ def process_export_voicebank(
         log("\n" + "=" * 50)
         log("【打包结果】")
         
-        # 根据插件类型确定导出目录
-        export_subdir = "utau_oto" if "UTAU" in plugin_name else "simple_export"
+        # 根据插件类型确定导出目录和导出标识
+        if "UTAU" in plugin_name:
+            export_subdir = "utau_oto"
+            export_id = "utau_oto_export"
+        else:
+            export_subdir = "simple_export"
+            export_id = "simple_export"
+        
         export_dir = os.path.join(workspace, "export", source_name, export_subdir)
         
         # 如果导出目录不存在，尝试其他位置
@@ -482,16 +488,21 @@ def process_export_voicebank(
         # 再尝试另一个子目录
         if not os.path.exists(export_dir):
             other_subdir = "simple_export" if export_subdir == "utau_oto" else "utau_oto"
+            other_id = "simple_export" if export_id == "utau_oto_export" else "utau_oto_export"
             export_dir = os.path.join(workspace, "export", source_name, other_subdir)
             if not os.path.exists(export_dir):
                 alt_export = os.path.join(os.path.dirname(bank_dir), "export", source_name, other_subdir)
                 if os.path.exists(alt_export):
                     export_dir = alt_export
+                    export_id = other_id
+            else:
+                export_id = other_id
         
         if not os.path.exists(export_dir):
             return "❌ 未找到导出结果", "\n".join(logs), None
         
-        zip_name = f"{source_name}_导出结果"
+        # 命名格式: [音源名称]_[插件标识]
+        zip_name = f"{source_name}_{export_id}"
         result_zip = create_zip(export_dir, zip_name)
         
         if result_zip:

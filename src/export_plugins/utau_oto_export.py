@@ -234,11 +234,6 @@ class UTAUOtoExportPlugin(ExportPlugin):
     def get_options(self) -> List[PluginOption]:
         return [
             PluginOption(
-                key="info",
-                label="从 TextGrid phones 层提取音素，生成 oto.ini（音频不裁剪）",
-                option_type=OptionType.LABEL
-            ),
-            PluginOption(
                 key="cross_language",
                 label="跨语种导出",
                 option_type=OptionType.SWITCH,
@@ -309,11 +304,11 @@ class UTAUOtoExportPlugin(ExportPlugin):
                 description="oto.ini 和 character.txt 编码（UTAU 标准为 Shift_JIS）"
             ),
             PluginOption(
-                key="sanitize_filename",
-                label="文件名转拼音",
-                option_type=OptionType.SWITCH,
-                default=False,
-                description="将中文文件名转为拼音，清理特殊字符，防止 UTAU 识别故障"
+                key="character_name",
+                label="角色名称",
+                option_type=OptionType.TEXT,
+                default="",
+                description="character.txt 中的角色名，留空则使用音源名称"
             ),
         ]
     
@@ -325,8 +320,8 @@ class UTAUOtoExportPlugin(ExportPlugin):
     ) -> Tuple[bool, str]:
         """执行 UTAU oto.ini 导出"""
         try:
-            # 加载语言设置
-            language = self._load_language_from_meta(bank_dir, source_name)
+            # 使用基类方法加载语言设置
+            language = self.load_language_from_meta(bank_dir, source_name)
             
             # 获取选项
             max_samples = int(options.get("max_samples", 5))
@@ -336,11 +331,11 @@ class UTAUOtoExportPlugin(ExportPlugin):
             alias_style = options.get("alias_style", "romaji")
             overlap_ratio = float(options.get("overlap_ratio", 0.3))
             encoding = options.get("encoding", "utf-8")
-            sanitize_filename = options.get("sanitize_filename", False)
+            character_name = options.get("character_name", "").strip()
             use_hiragana = (alias_style == "hiragana") and language in ('japanese', 'ja', 'jp')
             
-            # 解析质量评估维度
-            enabled_metrics = self._parse_quality_metrics(quality_metrics)
+            # 使用基类方法解析质量评估维度
+            enabled_metrics = self.parse_quality_metrics(quality_metrics)
             
             paths = self.get_source_paths(bank_dir, source_name)
             export_dir = self.get_export_dir(bank_dir, source_name, "utau_oto")
@@ -370,12 +365,10 @@ class UTAUOtoExportPlugin(ExportPlugin):
             )
             self._log(f"筛选后保留 {len(filtered_entries)} 条配置，涉及 {len(used_wavs)} 个音频文件")
             
-            # 步骤3: 复制音频文件（可选文件名转拼音）
+            # 步骤3: 复制音频文件（自动检测文件名是否需要转拼音）
             self._log("\n【复制音频文件】")
-            if sanitize_filename:
-                self._log("已启用文件名转拼音")
             copied, filename_map = self._copy_wav_files(
-                used_wavs, paths["slices_dir"], export_dir, sanitize_filename
+                used_wavs, paths["slices_dir"], export_dir, encoding
             )
             self._log(f"复制了 {copied} 个音频文件")
             
@@ -388,7 +381,9 @@ class UTAUOtoExportPlugin(ExportPlugin):
             # 步骤5: 写入 character.txt
             self._log("\n【生成 character.txt】")
             char_path = os.path.join(export_dir, "character.txt")
-            self._write_character_txt(source_name, char_path, encoding)
+            # 使用自定义角色名，留空则使用音源名称
+            final_character_name = character_name if character_name else source_name
+            self._write_character_txt(final_character_name, char_path, encoding)
             self._log(f"写入: {char_path}")
             
             # 统计别名数量
@@ -398,31 +393,6 @@ class UTAUOtoExportPlugin(ExportPlugin):
         except Exception as e:
             logger.error(f"UTAU oto.ini 导出失败: {e}", exc_info=True)
             return False, str(e)
-    
-    def _parse_quality_metrics(self, metrics_str: str) -> List[str]:
-        """解析质量评估维度选项"""
-        if metrics_str == "all":
-            return ["duration", "rms", "f0"]
-        elif metrics_str == "duration+rms":
-            return ["duration", "rms"]
-        elif metrics_str == "duration+f0":
-            return ["duration", "f0"]
-        else:
-            return ["duration"]
-    
-    def _load_language_from_meta(self, bank_dir: str, source_name: str) -> str:
-        """从 meta.json 加载语言设置"""
-        meta_path = os.path.join(bank_dir, source_name, "meta.json")
-        try:
-            if os.path.exists(meta_path):
-                with open(meta_path, 'r', encoding='utf-8') as f:
-                    meta = json.load(f)
-                    language = meta.get("language", "chinese")
-                    self._log(f"语言设置: {language}")
-                    return language
-        except Exception as e:
-            logger.warning(f"读取 meta.json 失败: {e}")
-        return "chinese"
     
     def _parse_textgrids(
         self,
@@ -689,11 +659,11 @@ class UTAUOtoExportPlugin(ExportPlugin):
             
             # 保留前 N 个，并应用命名规则
             for idx, entry in enumerate(sorted_group[:max_samples]):
-                # 生成带编号的别名
+                # 使用基类方法应用命名规则
                 if idx == 0 and first_naming_rule:
-                    final_alias = self._apply_naming_rule(first_naming_rule, base_alias, idx)
+                    final_alias = self.apply_naming_rule(first_naming_rule, base_alias, idx)
                 else:
-                    final_alias = self._apply_naming_rule(naming_rule, base_alias, idx)
+                    final_alias = self.apply_naming_rule(naming_rule, base_alias, idx)
                 
                 entry["alias"] = final_alias
                 filtered.append(entry)
@@ -747,16 +717,12 @@ class UTAUOtoExportPlugin(ExportPlugin):
         
         return entries
     
-    def _apply_naming_rule(self, rule: str, base_alias: str, index: int) -> str:
-        """应用命名规则生成别名"""
-        return rule.replace("%p%", base_alias).replace("%n%", str(index))
-    
     def _copy_wav_files(
         self,
         wav_files: set,
         slices_dir: str,
         export_dir: str,
-        sanitize: bool = False
+        encoding: str = "shift_jis"
     ) -> Tuple[int, Dict[str, str]]:
         """
         复制音频文件到导出目录
@@ -765,7 +731,7 @@ class UTAUOtoExportPlugin(ExportPlugin):
             wav_files: 需要复制的文件名集合
             slices_dir: 源目录
             export_dir: 目标目录
-            sanitize: 是否对文件名进行转拼音和清理
+            encoding: 目标编码，用于检测文件名是否合法
         
         返回:
             (复制数量, 文件名映射表 {原文件名: 新文件名})
@@ -773,24 +739,47 @@ class UTAUOtoExportPlugin(ExportPlugin):
         copied = 0
         filename_map: Dict[str, str] = {}
         used_names: set = set()
+        sanitized_count = 0
         
         for wav_name in wav_files:
             src = os.path.join(slices_dir, wav_name)
             if not os.path.exists(src):
                 continue
             
-            if sanitize:
-                new_name = self._sanitize_filename(wav_name, used_names)
-                used_names.add(new_name)
-            else:
+            # 检测文件名是否能用指定编码表示
+            if self._is_filename_valid(wav_name, encoding):
                 new_name = wav_name
+            else:
+                new_name = self._sanitize_filename(wav_name, used_names)
+                sanitized_count += 1
             
+            used_names.add(new_name)
             filename_map[wav_name] = new_name
             dst = os.path.join(export_dir, new_name)
             shutil.copyfile(src, dst)
             copied += 1
         
+        if sanitized_count > 0:
+            self._log(f"已将 {sanitized_count} 个文件名转换为拼音（原文件名无法用 {encoding} 编码）")
+        
         return copied, filename_map
+    
+    def _is_filename_valid(self, filename: str, encoding: str) -> bool:
+        """
+        检测文件名是否合法（能否用指定编码表示）
+        
+        参数:
+            filename: 文件名
+            encoding: 目标编码
+        
+        返回:
+            True 表示文件名合法，False 表示需要转换
+        """
+        try:
+            filename.encode(encoding)
+            return True
+        except UnicodeEncodeError:
+            return False
     
     def _sanitize_filename(self, filename: str, used_names: set) -> str:
         """
@@ -883,25 +872,31 @@ class UTAUOtoExportPlugin(ExportPlugin):
     
     def _write_character_txt(
         self,
-        source_name: str,
+        character_name: str,
         output_path: str,
         encoding: str
     ):
         """写入 character.txt 文件，用于 UTAU 识别音源名称
         
-        注意：当音源名称包含无法用指定编码表示的字符时，
+        参数:
+            character_name: 角色名称（可以是用户自定义的名称或音源名称）
+            output_path: 输出路径
+            encoding: 文件编码
+        
+        注意：当角色名称包含无法用指定编码表示的字符时，
         自动将名称转换为拼音/罗马音。
         """
-        name_to_write = source_name
+        name_to_write = character_name
         
         # 检测是否能用指定编码
         try:
-            source_name.encode(encoding)
+            character_name.encode(encoding)
         except UnicodeEncodeError:
             # 无法编码，转换为拼音
             from pypinyin import lazy_pinyin
-            pinyin_name = ''.join(lazy_pinyin(source_name))
-            logger.warning(f"音源名称 '{source_name}' 无法用 {encoding} 编码，已转换为拼音: {pinyin_name}")
+            pinyin_name = ''.join(lazy_pinyin(character_name))
+            logger.warning(f"角色名称 '{character_name}' 无法用 {encoding} 编码，已转换为拼音: {pinyin_name}")
+            self._log(f"角色名称 '{character_name}' 无法用 {encoding} 编码，已转换为拼音: {pinyin_name}")
             name_to_write = pinyin_name
         
         with open(output_path, 'w', encoding=encoding) as f:

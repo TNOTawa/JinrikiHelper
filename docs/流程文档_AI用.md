@@ -142,6 +142,8 @@
 │ │       • Overlap: 交叉淡化区域                                        │ │
 │ │    3. IPA 音素转换为拼音/罗马音别名                                  │ │
 │ │    4. 生成 oto.ini 配置文件                                          │ │
+│ │    5. 生成 character.txt（支持自定义角色名）                         │ │
+│ │    6. 自动检测文件名编码兼容性，不合法时转拼音                       │ │
 │ └─────────────────────────────────────────────────────────────────────┘ │
 │                                                                         │
 │ 输出: export/[音源名称]/simple_export/                                  │
@@ -201,9 +203,9 @@ MFA 支持两种运行模式:
 
 | 模块 | 文件 | 功能 |
 |------|------|------|
-| 插件基类 | `export_plugins/base.py` | 定义插件接口和配置选项 |
+| 插件基类 | `export_plugins/base.py` | 定义插件接口、配置选项和公共方法 |
 | 插件加载器 | `export_plugins/loader.py` | 扫描和加载插件 |
-| 简单导出 | `export_plugins/simple_export.py` | 按拼音分类导出单字音频 |
+| 简单导出 | `export_plugins/simple_export.py` | 按拼音分类导出单字音频，支持质量评估 |
 | UTAU 导出 | `export_plugins/utau_oto_export.py` | 生成 UTAU 音源配置文件 (oto.ini) |
 | 质量评分 | `quality_scorer.py` | 音频质量多维度评估 |
 
@@ -214,6 +216,14 @@ MFA 支持两种运行模式:
 - `COMBO`: 下拉选择
 - `MULTI_SELECT`: 多选框
 - `FILE`/`FOLDER`: 文件/文件夹选择
+
+基类公共方法 (`ExportPlugin`):
+- `load_language_from_meta()`: 从 meta.json 加载语言设置
+- `parse_quality_metrics()`: 解析质量评估维度选项
+- `apply_naming_rule()`: 应用命名规则生成文件名/别名
+- `get_source_paths()`: 获取音源相关路径
+- `get_export_dir()`: 获取导出目录路径
+- `get_quality_scorer()`: 获取质量评分器实例
 
 ### 5. 音源质量评分模块
 
@@ -234,9 +244,15 @@ scores = scorer.score_from_file("audio.wav")
 # 返回: {"duration": 0.85, "f0": 0.91, "combined": 0.88}
 ```
 
-导出插件基类已集成质量评分接口:
-- `get_quality_scorer()`: 获取评分器实例
-- `score_audio_quality()`: 直接评估音频文件
+导出插件质量评估选项:
+- `duration`: 仅时长评估（默认，最快）
+- `duration+rms`: 时长 + 音量稳定性
+- `duration+f0`: 时长 + 音高稳定性
+- `all`: 全部维度（耗时较长）
+
+已集成质量评估的插件:
+- **简单单字导出**: 默认仅评估时长，可选启用 RMS/F0 评估
+- **UTAU oto.ini 导出**: 默认评估时长+RMS，可选启用 F0 评估
 
 ### 5. MFA 跨平台支持
 

@@ -21,17 +21,12 @@ class SimpleExportPlugin(ExportPlugin):
     """简单单字导出插件"""
     
     name = "简单单字导出"
-    description = "从TextGrid提取分词片段，按拼音排序导出"
+    description = "从TextGrid提取分词片段，按时长排序导出"
     version = "1.1.0"
     author = "内置"
     
     def get_options(self) -> List[PluginOption]:
         return [
-            PluginOption(
-                key="info",
-                label="将每个汉字按拼音分类，选取最佳样本导出",
-                option_type=OptionType.LABEL
-            ),
             PluginOption(
                 key="max_samples",
                 label="每个拼音最大样本数",
@@ -39,14 +34,22 @@ class SimpleExportPlugin(ExportPlugin):
                 default=10,
                 min_value=1,
                 max_value=1000,
-                description="按时长排序，保留最长的N个"
+                description="按质量评分排序，保留最佳的N个"
+            ),
+            PluginOption(
+                key="quality_metrics",
+                label="质量评估维度",
+                option_type=OptionType.COMBO,
+                default="duration",
+                choices=["duration", "duration+rms", "duration+f0", "all"],
+                description="duration=仅时长, +rms=音量稳定性, +f0=音高稳定性。选择 all 可能耗时较长"
             ),
             PluginOption(
                 key="extend_duration",
                 label="头尾拓展（秒）",
                 option_type=OptionType.TEXT,
                 default="0",
-                description="裁剪时头尾各拓展的时长，最大1.5秒。若一边到达边界，另一边继续拓展"
+                description="裁剪时头尾各拓展的时长，最大0.5秒。若一边到达边界，另一边继续拓展"
             ),
             PluginOption(
                 key="naming_rule",
@@ -71,25 +74,6 @@ class SimpleExportPlugin(ExportPlugin):
             )
         ]
     
-    def _load_language_from_meta(self, bank_dir: str, source_name: str) -> str:
-        """从meta.json加载语言设置"""
-        meta_path = os.path.join(bank_dir, source_name, "meta.json")
-        try:
-            if os.path.exists(meta_path):
-                with open(meta_path, 'r', encoding='utf-8') as f:
-                    meta = json.load(f)
-                    language = meta.get("language", "chinese")
-                    self._log(f"从meta.json读取语言设置: {language}")
-                    return language
-        except Exception as e:
-            logger.warning(f"读取meta.json失败: {e}")
-        return "chinese"
-    
-    def _apply_naming_rule(self, rule: str, pinyin: str, index: int) -> str:
-        """应用命名规则生成文件名"""
-        name = rule.replace("%p%", pinyin).replace("%n%", str(index))
-        return name
-    
     def _apply_extend(
         self,
         start_time: float,
@@ -101,45 +85,29 @@ class SimpleExportPlugin(ExportPlugin):
         应用头尾拓展
         
         头尾各拓展 extend_duration 秒，若一边到达边界则另一边继续拓展
-        
-        参数:
-            start_time: 原始开始时间
-            end_time: 原始结束时间
-            extend_duration: 单边拓展时长
-            audio_duration: 音频总时长
-        
-        返回:
-            (实际开始时间, 实际结束时间)
         """
         if extend_duration <= 0:
             return start_time, end_time
         
-        total_extend = extend_duration * 2  # 总拓展量
+        total_extend = extend_duration * 2
         
-        # 先尝试头尾各拓展
-        head_extend = extend_duration
-        tail_extend = extend_duration
+        # 先尝试两边各拓展
+        new_start = max(0, start_time - extend_duration)
+        new_end = min(audio_duration, end_time + extend_duration)
         
-        # 检查头部是否到达边界
-        if start_time - head_extend < 0:
-            head_actual = start_time  # 头部只能拓展到0
-            head_remaining = head_extend - head_actual  # 剩余量转给尾部
-            tail_extend += head_remaining
-            head_extend = head_actual
+        # 计算实际拓展量，剩余量补偿到另一边
+        used = (start_time - new_start) + (new_end - end_time)
+        remaining = total_extend - used
         
-        # 检查尾部是否到达边界
-        if end_time + tail_extend > audio_duration:
-            tail_actual = audio_duration - end_time  # 尾部只能拓展到边界
-            tail_remaining = tail_extend - tail_actual  # 剩余量转给头部
-            # 头部再次尝试拓展（如果还有空间）
-            additional_head = min(tail_remaining, start_time - (start_time - head_extend))
-            head_extend = min(start_time, head_extend + tail_remaining)
-            tail_extend = tail_actual
+        if remaining > 0:
+            # 优先补偿到尾部，再补偿到头部
+            extra_end = min(remaining, audio_duration - new_end)
+            new_end += extra_end
+            remaining -= extra_end
+            if remaining > 0:
+                new_start = max(0, new_start - remaining)
         
-        actual_start = max(0, start_time - head_extend)
-        actual_end = min(audio_duration, end_time + tail_extend)
-        
-        return actual_start, actual_end
+        return new_start, new_end
     
     def export(
         self,
@@ -149,12 +117,16 @@ class SimpleExportPlugin(ExportPlugin):
     ) -> Tuple[bool, str]:
         """执行简单单字导出"""
         try:
-            # 自动从meta.json获取语言设置
-            language = self._load_language_from_meta(bank_dir, source_name)
+            # 使用基类方法获取语言设置
+            language = self.load_language_from_meta(bank_dir, source_name)
             max_samples = int(options.get("max_samples", 10))
             naming_rule = options.get("naming_rule", "%p%_%n%")
             first_naming_rule = options.get("first_naming_rule", "")
             clean_temp = options.get("clean_temp", True)
+            quality_metrics = options.get("quality_metrics", "duration")
+            
+            # 使用基类方法解析质量评估维度
+            enabled_metrics = self.parse_quality_metrics(quality_metrics)
             
             paths = self.get_source_paths(bank_dir, source_name)
             export_dir = self.get_export_dir(bank_dir, source_name, "simple_export")
@@ -164,7 +136,7 @@ class SimpleExportPlugin(ExportPlugin):
             segments_dir = os.path.join(temp_base, source_name)
             
             # 获取头尾拓展参数
-            extend_duration = min(float(options.get("extend_duration", 0)), 1.5)
+            extend_duration = min(float(options.get("extend_duration", 0)), 0.5)
             
             # 步骤1: 提取分词片段
             self._log("【提取分词片段】")
@@ -181,13 +153,14 @@ class SimpleExportPlugin(ExportPlugin):
                 return False, msg
             
             # 步骤2: 排序导出
-            self._log("\n【排序导出】")
+            self._log(f"\n【排序导出】评估维度: {enabled_metrics}")
             success, msg = self._sort_and_export(
                 segments_dir,
                 export_dir,
                 max_samples,
                 naming_rule,
-                first_naming_rule
+                first_naming_rule,
+                enabled_metrics
             )
             if not success:
                 return False, msg
@@ -517,11 +490,13 @@ class SimpleExportPlugin(ExportPlugin):
         export_dir: str,
         max_samples: int,
         naming_rule: str,
-        first_naming_rule: str
+        first_naming_rule: str,
+        enabled_metrics: List[str]
     ) -> Tuple[bool, str]:
         """排序并导出"""
         try:
             import soundfile as sf
+            from src.quality_scorer import QualityScorer, duration_score
             
             os.makedirs(export_dir, exist_ok=True)
             
@@ -541,8 +516,15 @@ class SimpleExportPlugin(ExportPlugin):
             
             self._log(f"扫描到 {len(wav_files)} 个片段")
             
+            # 判断是否需要加载音频计算质量分数
+            need_audio_scoring = any(m in enabled_metrics for m in ["rms", "f0"])
+            
             # 按拼音分组
-            stats: Dict[str, List[Tuple[str, float]]] = {}
+            stats: Dict[str, List[Tuple[str, float, float]]] = {}  # pinyin -> [(path, duration, score)]
+            
+            if need_audio_scoring:
+                scorer = QualityScorer(enabled_metrics=enabled_metrics)
+            
             for path in wav_files:
                 rel_path = os.path.relpath(path, segments_dir)
                 parts = rel_path.split(os.sep)
@@ -550,24 +532,42 @@ class SimpleExportPlugin(ExportPlugin):
                     pinyin = parts[0]
                     if pinyin not in stats:
                         stats[pinyin] = []
-                    info = sf.info(path)
-                    stats[pinyin].append((path, info.duration))
+                    
+                    try:
+                        info = sf.info(path)
+                        duration = info.duration
+                        
+                        if need_audio_scoring:
+                            # 加载音频计算质量分数
+                            audio, sr = sf.read(path)
+                            if len(audio.shape) > 1:
+                                audio = audio.mean(axis=1)
+                            scores = scorer.score(audio, sr, duration)
+                            quality_score = scores.get("combined", 0.5)
+                        else:
+                            # 仅使用时长评分
+                            quality_score = duration_score(duration)
+                        
+                        stats[pinyin].append((path, duration, quality_score))
+                    except Exception as e:
+                        logger.warning(f"处理文件失败 {path}: {e}")
+                        continue
             
             self._log(f"统计到 {len(stats)} 个拼音")
             self._log(f"命名规则: {naming_rule}")
             if first_naming_rule:
                 self._log(f"首个样本规则: {first_naming_rule}")
             
-            # 按时长排序并导出
+            # 按质量分数排序并导出
             exported = 0
             for pinyin, files in stats.items():
-                sorted_files = sorted(files, key=lambda x: -x[1])
-                for idx, (src_path, _) in enumerate(sorted_files[:max_samples]):
-                    # 第0个样本使用特殊规则（如果设置了）
+                sorted_files = sorted(files, key=lambda x: -x[2])  # 按质量分数降序
+                for idx, (src_path, _, _) in enumerate(sorted_files[:max_samples]):
+                    # 使用基类方法应用命名规则
                     if idx == 0 and first_naming_rule:
-                        filename = self._apply_naming_rule(first_naming_rule, pinyin, idx)
+                        filename = self.apply_naming_rule(first_naming_rule, pinyin, idx)
                     else:
-                        filename = self._apply_naming_rule(naming_rule, pinyin, idx)
+                        filename = self.apply_naming_rule(naming_rule, pinyin, idx)
                     
                     dst_path = os.path.join(export_dir, f'{filename}.wav')
                     shutil.copyfile(src_path, dst_path)
