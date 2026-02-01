@@ -100,6 +100,17 @@ def _build_mfa_env() -> dict:
             pkuseg_home.mkdir(parents=True, exist_ok=True)
             env["PKUSEG_HOME"] = str(pkuseg_home)
             logger.info(f"设置 PKUSEG_HOME: {pkuseg_home}")
+            
+            # 验证 pkuseg 模型是否存在（检查 zip 文件，这是 spacy_pkuseg 的检查方式）
+            spacy_ontonotes_zip = pkuseg_home / "spacy_ontonotes.zip"
+            if spacy_ontonotes_zip.exists():
+                logger.info(f"pkuseg 模型 zip 已存在: {spacy_ontonotes_zip}")
+            else:
+                logger.warning(f"pkuseg 模型 zip 不存在: {spacy_ontonotes_zip}")
+                # 列出目录内容供调试
+                if pkuseg_home.exists():
+                    files = list(pkuseg_home.iterdir())
+                    logger.info(f"pkuseg 目录内容: {[f.name for f in files]}")
         
         # 确保从系统环境继承 PKUSEG_HOME（如果已设置）
         if "PKUSEG_HOME" not in env and os.environ.get("PKUSEG_HOME"):

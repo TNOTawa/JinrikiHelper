@@ -274,7 +274,12 @@ def download_all_models():
 def download_pkuseg_models() -> bool:
     """下载 pkuseg 中文分词模型，返回是否成功
     
-    spacy-pkuseg 需要模型文件在 PKUSEG_HOME/spacy_ontonotes/ 目录下
+    spacy-pkuseg 检查模型的逻辑：
+    1. 先检查 PKUSEG_HOME/<model_name>.zip 是否存在
+    2. 如果 zip 存在，解压到 PKUSEG_HOME/<model_name>/ 目录
+    3. 如果 zip 不存在，从 GitHub 下载
+    
+    因此我们需要保留 .zip 文件，否则 spacy_pkuseg 会尝试重新下载
     """
     logger.info("\n【下载 pkuseg 模型】")
     
@@ -284,12 +289,18 @@ def download_pkuseg_models() -> bool:
     pkuseg_model_dir = pkuseg_home / "spacy_ontonotes"
     postag_model_dir = pkuseg_home / "postag"
     
-    # 检查新格式 (msgpack) 是否已存在于正确位置
-    if (pkuseg_model_dir / "features.msgpack").exists():
-        logger.info(f"pkuseg 模型已存在: {pkuseg_model_dir}")
+    # 关键：检查 .zip 文件是否存在（spacy_pkuseg 的检查逻辑）
+    spacy_ontonotes_zip = pkuseg_home / "spacy_ontonotes.zip"
+    postag_zip = pkuseg_home / "postag.zip"
+    
+    if spacy_ontonotes_zip.exists() and postag_zip.exists():
+        logger.info(f"pkuseg 模型 zip 文件已存在: {pkuseg_home}")
+        # 列出目录内容供调试
+        files = [f.name for f in pkuseg_home.iterdir()]
+        logger.info(f"pkuseg 目录内容: {files}")
         return True
     
-    # 检查是否有文件被错误解压到根目录
+    # 检查是否有文件被错误解压到根目录（旧版本遗留问题）
     root_msgpack = pkuseg_home / "features.msgpack"
     if root_msgpack.exists():
         logger.info("检测到模型文件在根目录，移动到正确位置...")
@@ -311,23 +322,23 @@ def download_pkuseg_models() -> bool:
                 dst = postag_model_dir / filename
                 src.rename(dst)
                 logger.info(f"移动 {filename} -> postag/")
-        
-        # 清理残留的 zip 文件
-        for zf in pkuseg_home.glob("*.zip"):
-            zf.unlink()
-            logger.info(f"删除 {zf.name}")
     
-    # 再次检查
-    if (pkuseg_model_dir / "features.msgpack").exists():
-        logger.info(f"pkuseg 模型已就绪: {pkuseg_model_dir}")
-        files = [f.name for f in pkuseg_model_dir.iterdir()]
-        logger.info(f"spacy_ontonotes 内容: {files}")
+    # 再次检查（如果有解压后的目录但没有 zip，需要重新下载 zip）
+    need_download = []
+    if not spacy_ontonotes_zip.exists():
+        need_download.append("spacy_ontonotes")
+    if not postag_zip.exists():
+        need_download.append("postag")
+    
+    if not need_download:
+        logger.info(f"pkuseg 模型已就绪: {pkuseg_home}")
         return True
     
     # 需要下载模型
-    logger.info("下载 pkuseg 模型...")
+    logger.info(f"需要下载 pkuseg 模型: {need_download}")
     
     # 使用 spacy-pkuseg 的模型（新格式 msgpack）
+    # 注意：必须保留 .zip 文件，spacy_pkuseg 会检查 zip 是否存在
     models = [
         {
             "name": "spacy_ontonotes",
@@ -351,17 +362,18 @@ def download_pkuseg_models() -> bool:
     
     for model in models:
         model_name = model["name"]
-        model_dir = pkuseg_home / model_name
-        check_file = model_dir / model["check_file"]
         
-        if check_file.exists():
-            logger.info(f"{model_name} 已存在，跳过")
+        # 跳过不需要下载的模型
+        if model_name not in need_download:
             continue
+        
+        model_dir = pkuseg_home / model_name
+        zip_path = pkuseg_home / f"{model_name}.zip"
+        check_file = model_dir / model["check_file"]
         
         downloaded = False
         for url in model["urls"]:
             logger.info(f"下载 {model_name}: {url}")
-            zip_path = pkuseg_home / f"{model_name}.zip"
             
             try:
                 # 下载
@@ -392,12 +404,12 @@ def download_pkuseg_models() -> bool:
                     logger.warning(f"unzip 解压失败: {result.stderr}")
                     continue
                 
-                # 清理 zip 文件
-                zip_path.unlink(missing_ok=True)
+                # 重要：保留 zip 文件！spacy_pkuseg 会检查 zip 是否存在
+                # 不要删除 zip_path
                 
                 # 验证
                 if check_file.exists():
-                    logger.info(f"{model_name} 下载并解压成功")
+                    logger.info(f"{model_name} 下载并解压成功（保留 zip 文件）")
                     files = [f.name for f in model_dir.iterdir()]
                     logger.info(f"{model_name} 目录内容: {files}")
                     downloaded = True
