@@ -44,14 +44,18 @@ class CloudConfig:
     # 支持的音频格式
     AUDIO_EXTENSIONS = ('.wav', '.mp3', '.flac', '.ogg', '.m4a')
     
-    # Whisper 模型选项
+    # Whisper 模型选项（含速度说明）
     WHISPER_MODELS = {
-        "whisper-small": "openai/whisper-small",
-        "whisper-medium": "openai/whisper-medium"
+        "whisper-small (快速，约4秒/句)": "openai/whisper-small",
+        "whisper-medium (精准，约12秒/句)": "openai/whisper-medium"
     }
     
     # 语言选项
     LANGUAGES = ["chinese", "japanese"]
+
+
+# 全局状态：存储最近制作的音源包路径
+_last_made_voicebank: Optional[str] = None
 
 
 def create_temp_workspace() -> str:
@@ -158,6 +162,7 @@ def process_make_voicebank(
     
     返回: (状态, 日志, 下载文件路径)
     """
+    global _last_made_voicebank
     from src.pipeline import PipelineConfig, VoiceBankPipeline
     
     logs = []
@@ -275,6 +280,8 @@ def process_make_voicebank(
         if zip_path:
             log(f"📦 已打包: {os.path.basename(zip_path)}")
             progress(1.0, desc="完成")
+            # 保存到全局状态，供导出页面使用
+            _last_made_voicebank = zip_path
             return "✅ 音源制作完成", "\n".join(logs), zip_path
         else:
             return "❌ 打包失败", "\n".join(logs), None
@@ -290,35 +297,43 @@ def process_make_voicebank(
 
 # ==================== 导出音源功能 ====================
 
-def validate_voicebank_zip(zip_file) -> Tuple[bool, str, Optional[str]]:
+def get_last_made_voicebank() -> Tuple[Optional[str], str]:
     """
-    验证上传的音源压缩包
+    获取最近制作的音源包
+    
+    返回: (文件路径, 信息消息)
+    """
+    global _last_made_voicebank
+    if _last_made_voicebank and os.path.exists(_last_made_voicebank):
+        valid, msg, name = validate_voicebank_zip_path(_last_made_voicebank)
+        if valid:
+            return _last_made_voicebank, f"✅ 已选择刚制作的音源: {name}"
+    return None, ""
+
+
+def validate_voicebank_zip_path(zip_path: str) -> Tuple[bool, str, Optional[str]]:
+    """
+    验证音源压缩包路径
     
     返回: (是否有效, 消息, 音源名称)
     """
-    if not zip_file:
-        return False, "请上传音源压缩包", None
-    
-    zip_path = zip_file.name if hasattr(zip_file, 'name') else str(zip_file)
+    if not zip_path or not os.path.exists(zip_path):
+        return False, "文件不存在", None
     
     if not zip_path.lower().endswith('.zip'):
         return False, "请上传 .zip 格式的压缩包", None
     
-    # 检查压缩包内容
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
             names = zf.namelist()
             
-            # 查找 slices 目录
+            has_wav = any(n.endswith('.wav') for n in names)
             has_slices = any('slices/' in n for n in names)
             has_textgrid = any('textgrid/' in n for n in names)
-            has_wav = any(n.endswith('.wav') for n in names)
-            has_lab = any(n.endswith('.lab') for n in names)
             
             if not has_wav:
                 return False, "压缩包中未找到 .wav 音频文件", None
             
-            # 尝试从 meta.json 获取音源名称
             source_name = None
             if 'meta.json' in names:
                 try:
@@ -328,9 +343,7 @@ def validate_voicebank_zip(zip_file) -> Tuple[bool, str, Optional[str]]:
                 except:
                     pass
             
-            # 如果没有 meta.json，从目录结构推断
             if not source_name:
-                # 从 zip 文件名推断
                 source_name = Path(zip_path).stem.replace('_音源数据', '')
             
             info_parts = []
@@ -349,6 +362,19 @@ def validate_voicebank_zip(zip_file) -> Tuple[bool, str, Optional[str]]:
         return False, "无效的 zip 文件", None
     except Exception as e:
         return False, f"验证失败: {e}", None
+
+
+def validate_voicebank_zip(zip_file) -> Tuple[bool, str, Optional[str]]:
+    """
+    验证上传的音源压缩包
+    
+    返回: (是否有效, 消息, 音源名称)
+    """
+    if not zip_file:
+        return False, "请上传音源压缩包", None
+    
+    zip_path = zip_file.name if hasattr(zip_file, 'name') else str(zip_file)
+    return validate_voicebank_zip_path(zip_path)
 
 
 def process_export_voicebank(
@@ -507,6 +533,13 @@ def create_cloud_ui():
                     file_types=["audio"]
                 )
                 
+                # 上传状态提示
+                upload_status = gr.Textbox(
+                    label="上传状态",
+                    value="⏳ 请上传音频文件",
+                    interactive=False
+                )
+                
                 with gr.Row():
                     make_source_name = gr.Textbox(
                         label="音源名称",
@@ -522,9 +555,8 @@ def create_cloud_ui():
                 with gr.Row():
                     make_whisper = gr.Dropdown(
                         choices=list(CloudConfig.WHISPER_MODELS.keys()),
-                        value="whisper-small",
-                        label="Whisper 模型",
-                        info="small 更快，medium 更准"
+                        value=list(CloudConfig.WHISPER_MODELS.keys())[0],
+                        label="Whisper 模型"
                     )
                     make_mfa_status = gr.Textbox(
                         label="MFA 状态",
@@ -532,7 +564,11 @@ def create_cloud_ui():
                         interactive=False
                     )
                 
-                make_btn = gr.Button("🚀 开始制作", variant="primary", size="lg")
+                gr.Markdown("""
+                > ⏱️ **模型速度参考**：small 约 4 秒/句，medium 约 12 秒/句（medium 慢 2-3 倍但更准确）
+                """)
+                
+                make_btn = gr.Button("🚀 开始制作", variant="primary", size="lg", interactive=False)
                 
                 make_status = gr.Textbox(label="状态", interactive=False)
                 make_log = gr.Textbox(label="处理日志", lines=12, interactive=False)
@@ -548,6 +584,29 @@ def create_cloud_ui():
                 > 4. 打包为 zip 供下载
                 """)
                 
+                # 音频上传状态检测
+                def check_audio_upload(files):
+                    """检查音频上传状态，返回状态文本和按钮可用性"""
+                    if not files:
+                        return "⏳ 请上传音频文件", gr.update(interactive=False)
+                    
+                    valid_count = 0
+                    for f in files:
+                        path = f.name if hasattr(f, 'name') else str(f)
+                        if path.lower().endswith(CloudConfig.AUDIO_EXTENSIONS):
+                            valid_count += 1
+                    
+                    if valid_count == 0:
+                        return f"❌ 未找到有效音频，支持: {', '.join(CloudConfig.AUDIO_EXTENSIONS)}", gr.update(interactive=False)
+                    
+                    return f"✅ 已上传 {valid_count} 个音频文件，可以开始制作", gr.update(interactive=True)
+                
+                audio_upload.change(
+                    fn=check_audio_upload,
+                    inputs=[audio_upload],
+                    outputs=[upload_status, make_btn]
+                )
+                
                 make_btn.click(
                     fn=process_make_voicebank,
                     inputs=[audio_upload, make_source_name, make_language, make_whisper],
@@ -556,8 +615,12 @@ def create_cloud_ui():
             
             # ==================== 导出音源页 ====================
             with gr.Tab("📤 导出音源"):
-                gr.Markdown("### 上传音源包")
-                gr.Markdown("上传之前制作的音源压缩包（包含 slices 和 textgrid 目录）")
+                gr.Markdown("### 选择音源包")
+                
+                # 使用刚制作的音源按钮
+                use_last_btn = gr.Button("📦 使用刚制作的音源", variant="secondary")
+                
+                gr.Markdown("或者上传之前制作的音源压缩包（包含 slices 和 textgrid 目录）")
                 
                 export_upload = gr.File(
                     label="上传音源包 (.zip)",
@@ -581,6 +644,21 @@ def create_cloud_ui():
                     fn=on_upload,
                     inputs=[export_upload],
                     outputs=[export_info]
+                )
+                
+                # 使用刚制作的音源
+                def use_last_voicebank():
+                    """使用刚制作的音源包"""
+                    path, msg = get_last_made_voicebank()
+                    if path:
+                        # 返回文件路径和信息
+                        return path, msg
+                    return None, "❌ 没有找到刚制作的音源，请先在「制作音源」页面制作，或手动上传"
+                
+                use_last_btn.click(
+                    fn=use_last_voicebank,
+                    inputs=[],
+                    outputs=[export_upload, export_info]
                 )
                 
                 gr.Markdown("---")
