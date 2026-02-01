@@ -197,55 +197,66 @@ def setup_mfa_linux():
                 logger.info("分词依赖已存在")
             
             # 预下载 pkuseg 模型（避免运行时从 GitHub 下载超时）
-            # pkuseg 检查的是 zip 文件，不是解压后的目录
-            pkuseg_model_zip = pkuseg_home / "spacy_ontonotes.zip"
-            postag_model_zip = pkuseg_home / "postag.zip"
-            if (not pkuseg_model_zip.exists() or not postag_model_zip.exists()) and python_path.exists():
+            # pkuseg 需要解压后的目录
+            pkuseg_model_dir = pkuseg_home / "spacy_ontonotes"
+            postag_model_dir = pkuseg_home / "postag"
+            if (not pkuseg_model_dir.exists() or not postag_model_dir.exists()) and python_path.exists():
                 logger.info(f"预下载 pkuseg 中文分词模型到 {pkuseg_home}...")
+                
+                import urllib.request
+                import zipfile
                 
                 # 手动下载模型文件（使用 GitHub 镜像）
                 models_to_download = [
                     {
-                        "name": "spacy_ontonotes.zip",
+                        "name": "spacy_ontonotes",
                         "urls": [
                             "https://ghfast.top/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
                             "https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
                         ],
-                        "path": pkuseg_model_zip,
+                        "dir": pkuseg_model_dir,
                     },
                     {
-                        "name": "postag.zip",
+                        "name": "postag",
                         "urls": [
                             "https://ghfast.top/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
                             "https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
                         ],
-                        "path": postag_model_zip,
+                        "dir": postag_model_dir,
                     },
                 ]
                 
-                import urllib.request
-                
                 for model in models_to_download:
-                    if model["path"].exists():
+                    if model["dir"].exists():
                         logger.info(f"{model['name']} 已存在")
                         continue
                     
                     downloaded = False
+                    zip_path = pkuseg_home / f"{model['name']}.zip"
+                    
                     for url in model["urls"]:
                         try:
                             logger.info(f"下载 {model['name']} 从 {url[:50]}...")
-                            urllib.request.urlretrieve(url, model["path"])
-                            logger.info(f"{model['name']} 下载完成")
+                            urllib.request.urlretrieve(url, zip_path)
+                            
+                            # 解压到目标目录
+                            with zipfile.ZipFile(zip_path, 'r') as zf:
+                                zf.extractall(pkuseg_home)
+                            zip_path.unlink()  # 删除 zip 文件
+                            
+                            logger.info(f"{model['name']} 下载并解压完成")
                             downloaded = True
                             break
                         except Exception as e:
                             logger.warning(f"从 {url[:30]}... 下载失败: {e}")
+                            if zip_path.exists():
+                                zip_path.unlink()
                     
                     if not downloaded:
                         logger.warning(f"{model['name']} 所有下载源均失败")
                 
                 # 验证模型是否可用
-                if pkuseg_model_zip.exists() and postag_model_zip.exists():
+                if pkuseg_model_dir.exists() and postag_model_dir.exists():
                     logger.info("pkuseg 模型下载完成")
                 else:
                     logger.warning(f"pkuseg 模型下载不完整，MFA 中文对齐可能不可用")
