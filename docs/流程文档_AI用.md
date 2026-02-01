@@ -155,10 +155,11 @@
 - 日文: `japanese_mfa.zip` + `japanese_mfa.dict`
 
 Silero VAD 下载镜像源（按优先级）:
-- ghproxy.com 镜像（国内加速）
-- mirror.ghproxy.com 镜像
+- HuggingFace deepghs/silero-vad-onnx（国内云环境推荐）
+- HuggingFace onnx-community/silero-vad
+- hf-mirror.com 镜像站
+- ghproxy.com 镜像（GitHub 加速）
 - jsdelivr CDN
-- fastgit 镜像
 - GitHub 原始地址（备选）
 
 MFA 字典文件完整性校验:

@@ -24,19 +24,29 @@ SILERO_VAD_CONFIG = {
 }
 
 # 下载镜像源列表（按优先级排序）
-# 国内云环境优先使用镜像源
+# 国内云环境优先使用 HuggingFace 镜像（魔搭创空间访问 HF 较快）
 DOWNLOAD_MIRRORS = [
-    # ghproxy 镜像（国内加速）
+    # HuggingFace 镜像（国内云环境推荐）
+    "https://huggingface.co/deepghs/silero-vad-onnx/resolve/main",
+    # HuggingFace onnx-community 镜像
+    "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx",
+    # HuggingFace 镜像站（hf-mirror.com）
+    "https://hf-mirror.com/deepghs/silero-vad-onnx/resolve/main",
+    # ghproxy 镜像（GitHub 加速）
     "https://ghproxy.com/https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data",
     # mirror.ghproxy 镜像
     "https://mirror.ghproxy.com/https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data",
     # jsdelivr CDN（稳定但可能有延迟）
     "https://cdn.jsdelivr.net/gh/snakers4/silero-vad@master/src/silero_vad/data",
-    # fastgit 镜像
-    "https://raw.fastgit.org/snakers4/silero-vad/master/src/silero_vad/data",
     # GitHub 原始地址（作为最后备选）
     "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data",
 ]
+
+# HuggingFace 镜像的文件名映射（HF 上的文件名可能不同）
+HF_FILENAME_MAP = {
+    "silero_vad.onnx": ["silero_vad.onnx", "model.onnx"],
+    "silero_vad.jit": ["silero_vad.jit"],
+}
 
 
 def _download_file_from_url(
@@ -144,15 +154,26 @@ def _download_file_with_mirrors(
         if progress_callback:
             progress_callback(msg)
     
+    # 获取可能的文件名列表（用于 HuggingFace 镜像）
+    possible_filenames = HF_FILENAME_MAP.get(filename, [filename])
+    
     for i, base_url in enumerate(mirrors):
-        url = f"{base_url}/{filename}"
-        log(f"尝试镜像源 {i + 1}/{len(mirrors)}: {base_url.split('/')[2]}")
+        # 提取域名用于日志显示
+        try:
+            domain = base_url.split('/')[2]
+        except:
+            domain = base_url[:30]
+        
+        log(f"尝试镜像源 {i + 1}/{len(mirrors)}: {domain}")
         
         # 镜像源使用较短超时，快速切换
         timeout = 30 if i < len(mirrors) - 1 else 120
         
-        if _download_file_from_url(url, dest_path, timeout, progress_callback):
-            return True
+        # 尝试不同的文件名（HuggingFace 镜像可能使用 model.onnx）
+        for try_filename in possible_filenames:
+            url = f"{base_url}/{try_filename}"
+            if _download_file_from_url(url, dest_path, timeout, progress_callback):
+                return True
         
         if i < len(mirrors) - 1:
             log("切换到下一个镜像源...")
