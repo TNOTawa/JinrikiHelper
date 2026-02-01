@@ -93,9 +93,12 @@ def _build_mfa_env() -> dict:
         ]
         env["PATH"] = ";".join(mfa_paths) + ";" + env.get("PATH", "")
     else:
-        # Linux: 确保 conda 环境变量正确
-        # 通常不需要额外设置，但保留扩展点
-        pass
+        # Linux: 设置 pkuseg 模型目录（云端使用持久化路径）
+        persistent_models = Path("/home/studio_service/models")
+        if persistent_models.exists():
+            pkuseg_home = persistent_models / "pkuseg"
+            pkuseg_home.mkdir(parents=True, exist_ok=True)
+            env["PKUSEG_HOME"] = str(pkuseg_home)
     
     return env
 

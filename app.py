@@ -175,6 +175,13 @@ def setup_mfa_linux():
         
         # 3. 安装中文/日语分词依赖（无论新装还是已有环境都需要检查）
         pip_path = mfa_env / "bin" / "pip"
+        python_path = mfa_env / "bin" / "python"
+        
+        # 设置 pkuseg 模型目录到持久化路径（避免每次重启重新下载）
+        pkuseg_home = PERSISTENT_MODELS_DIR / "pkuseg" if PERSISTENT_MODELS_DIR.parent.exists() else Path("/root/.pkuseg")
+        pkuseg_home.mkdir(parents=True, exist_ok=True)
+        os.environ["PKUSEG_HOME"] = str(pkuseg_home)
+        
         if pip_path.exists():
             # 检查是否已安装分词依赖
             pkuseg_path = mfa_env / "lib" / "python3.11" / "site-packages" / "spacy_pkuseg"
@@ -188,6 +195,37 @@ def setup_mfa_linux():
                 logger.info("分词依赖安装完成")
             else:
                 logger.info("分词依赖已存在")
+            
+            # 预下载 pkuseg 模型（避免运行时从 GitHub 下载超时）
+            pkuseg_model_path = pkuseg_home / "spacy_ontonotes"
+            if not pkuseg_model_path.exists() and python_path.exists():
+                logger.info(f"预下载 pkuseg 中文分词模型到 {pkuseg_home}...")
+                env = os.environ.copy()
+                env["PKUSEG_HOME"] = str(pkuseg_home)
+                
+                # 重试下载（GitHub 访问不稳定）
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        logger.info(f"下载尝试 {attempt}/{max_retries}...")
+                        result = subprocess.run([
+                            str(python_path), "-c",
+                            "import spacy_pkuseg; spacy_pkuseg.pkuseg(postag=True)"
+                        ], env=env, capture_output=True, text=True, timeout=600)
+                        if result.returncode == 0:
+                            logger.info("pkuseg 模型下载完成")
+                            break
+                        else:
+                            logger.warning(f"尝试 {attempt} 失败: {result.stderr[-200:] if result.stderr else ''}")
+                    except subprocess.TimeoutExpired:
+                        logger.warning(f"尝试 {attempt} 超时")
+                    except Exception as e:
+                        logger.warning(f"尝试 {attempt} 异常: {e}")
+                    
+                    if attempt == max_retries:
+                        logger.warning("pkuseg 模型下载失败，MFA 中文对齐可能不可用")
+            else:
+                logger.info(f"pkuseg 模型已存在: {pkuseg_model_path}")
         
         # 4. 确保 MFA 环境的 bin 目录在 PATH 中
         if mfa_bin_dir.exists() and str(mfa_bin_dir) not in os.environ.get("PATH", ""):
