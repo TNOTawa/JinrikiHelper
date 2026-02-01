@@ -17,7 +17,7 @@ import zipfile
 import shutil
 import uuid
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 
 # 配置日志
 logging.basicConfig(
@@ -380,13 +380,16 @@ def validate_voicebank_zip(zip_file) -> Tuple[bool, str, Optional[str]]:
 def process_export_voicebank(
     zip_file,
     plugin_name: str,
-    max_samples: int,
-    naming_rule: str,
-    first_naming_rule: str,
+    options_json: str,
     progress=gr.Progress()
 ) -> Tuple[str, str, Optional[str]]:
     """
     导出音源：上传音源包 → 解压 → 导出 → 打包下载
+    
+    参数:
+        zip_file: 上传的音源压缩包
+        plugin_name: 导出插件名称
+        options_json: JSON 格式的插件选项
     
     返回: (状态, 日志, 下载文件路径)
     """
@@ -402,6 +405,12 @@ def process_export_voicebank(
     
     log(f"📦 {msg}")
     log(f"📝 音源名称: {source_name}")
+    
+    # 解析选项
+    try:
+        options = json.loads(options_json) if options_json else {}
+    except json.JSONDecodeError:
+        options = {}
     
     # 创建临时工作空间
     workspace = create_temp_workspace()
@@ -448,12 +457,8 @@ def process_export_voicebank(
         plugin = plugins[plugin_name]
         plugin.set_progress_callback(log)
         
-        options = {
-            "max_samples": max_samples,
-            "naming_rule": naming_rule,
-            "first_naming_rule": first_naming_rule,
-            "clean_temp": True
-        }
+        # 添加默认选项
+        options["clean_temp"] = True
         
         success, msg = plugin.export(source_name, bank_dir, options)
         
@@ -467,13 +472,24 @@ def process_export_voicebank(
         log("\n" + "=" * 50)
         log("【打包结果】")
         
-        export_dir = os.path.join(workspace, "export", source_name, "simple_export")
+        # 根据插件类型确定导出目录
+        export_subdir = "utau_oto" if "UTAU" in plugin_name else "simple_export"
+        export_dir = os.path.join(workspace, "export", source_name, export_subdir)
         
         # 如果导出目录不存在，尝试其他位置
         if not os.path.exists(export_dir):
-            alt_export = os.path.join(os.path.dirname(bank_dir), "export", source_name, "simple_export")
+            alt_export = os.path.join(os.path.dirname(bank_dir), "export", source_name, export_subdir)
             if os.path.exists(alt_export):
                 export_dir = alt_export
+        
+        # 再尝试另一个子目录
+        if not os.path.exists(export_dir):
+            other_subdir = "simple_export" if export_subdir == "utau_oto" else "utau_oto"
+            export_dir = os.path.join(workspace, "export", source_name, other_subdir)
+            if not os.path.exists(export_dir):
+                alt_export = os.path.join(os.path.dirname(bank_dir), "export", source_name, other_subdir)
+                if os.path.exists(alt_export):
+                    export_dir = alt_export
         
         if not os.path.exists(export_dir):
             return "❌ 未找到导出结果", "\n".join(logs), None
@@ -483,8 +499,8 @@ def process_export_voicebank(
         
         if result_zip:
             # 统计导出文件数
-            file_count = len([f for f in os.listdir(export_dir) if f.endswith('.wav')])
-            log(f"📦 已打包: {file_count} 个音频文件")
+            file_count = len([f for f in os.listdir(export_dir) if f.endswith(('.wav', '.ini'))])
+            log(f"📦 已打包: {file_count} 个文件")
             progress(1.0, desc="完成")
             return "✅ 导出完成", "\n".join(logs), result_zip
         else:
@@ -496,6 +512,68 @@ def process_export_voicebank(
     
     finally:
         cleanup_workspace(workspace)
+
+
+# ==================== 插件选项 UI 生成 ====================
+
+def get_plugin_options_config(plugins: Dict[str, Any]) -> Dict[str, List[Dict]]:
+    """
+    获取所有插件的选项配置
+    
+    返回: {插件名: [选项配置列表]}
+    """
+    from src.export_plugins.base import OptionType
+    
+    config = {}
+    for name, plugin in plugins.items():
+        options = []
+        for opt in plugin.get_options():
+            opt_config = {
+                "key": opt.key,
+                "label": opt.label,
+                "type": opt.option_type.value,
+                "default": opt.default,
+                "description": opt.description,
+                "choices": opt.choices,
+                "min_value": opt.min_value,
+                "max_value": opt.max_value,
+            }
+            options.append(opt_config)
+        config[name] = options
+    return config
+
+
+def build_plugin_options_html(plugin_name: str, plugins_config: Dict) -> str:
+    """
+    根据插件选项生成 HTML 表单
+    
+    这个方法生成一个简单的 HTML 表单，用于在 Gradio 中显示插件选项
+    """
+    if plugin_name not in plugins_config:
+        return "<p>未找到插件配置</p>"
+    
+    options = plugins_config[plugin_name]
+    html_parts = []
+    
+    for opt in options:
+        if opt["type"] == "label":
+            html_parts.append(f'<p style="color: #666; font-style: italic;">{opt["label"]}</p>')
+    
+    return "\n".join(html_parts) if html_parts else ""
+
+
+def get_default_options_json(plugin_name: str, plugins_config: Dict) -> str:
+    """获取插件的默认选项 JSON"""
+    if plugin_name not in plugins_config:
+        return "{}"
+    
+    options = plugins_config[plugin_name]
+    defaults = {}
+    for opt in options:
+        if opt["type"] != "label":
+            defaults[opt["key"]] = opt["default"]
+    
+    return json.dumps(defaults, ensure_ascii=False)
 
 
 # ==================== 构建界面 ====================
@@ -664,31 +742,140 @@ def create_cloud_ui():
                 gr.Markdown("---")
                 gr.Markdown("### 导出设置")
                 
+                # 获取插件选项配置
+                plugins_config = get_plugin_options_config(plugins)
+                
                 export_plugin = gr.Dropdown(
                     choices=plugin_names,
                     value=plugin_names[0] if plugin_names else None,
                     label="导出插件"
                 )
                 
-                with gr.Row():
-                    export_max_samples = gr.Number(
-                        label="每个拼音最大样本数",
-                        value=10,
-                        minimum=1,
-                        maximum=1000
+                # 插件描述
+                plugin_desc = gr.Markdown(
+                    value=f"> {plugins[plugin_names[0]].description}" if plugin_names and plugin_names[0] in plugins else ""
+                )
+                
+                # 存储当前选项的 JSON（隐藏）
+                options_state = gr.State(
+                    value=get_default_options_json(plugin_names[0], plugins_config) if plugin_names else "{}"
+                )
+                
+                # ===== 动态选项区域 =====
+                # 使用 gr.Group 包裹所有可能的选项组件，通过 visible 控制显示
+                
+                # 通用选项（两个插件都有）
+                with gr.Group():
+                    gr.Markdown("#### 基本设置")
+                    with gr.Row():
+                        export_max_samples = gr.Number(
+                            label="每个拼音/别名最大样本数",
+                            value=10,
+                            minimum=1,
+                            maximum=1000
+                        )
+                    
+                    with gr.Row():
+                        export_naming = gr.Textbox(
+                            label="命名规则",
+                            value="%p%%n%",
+                            info="%p%=拼音/罗马音, %n%=序号"
+                        )
+                        export_first_naming = gr.Textbox(
+                            label="首个样本命名",
+                            value="%p%",
+                            info="第0个样本的特殊规则"
+                        )
+                
+                # UTAU 专用选项
+                with gr.Group(visible=False) as utau_options_group:
+                    gr.Markdown("#### UTAU 专用设置")
+                    with gr.Row():
+                        export_quality_metrics = gr.Dropdown(
+                            label="质量评估维度",
+                            choices=["duration", "duration+rms", "duration+f0", "all"],
+                            value="duration+rms",
+                            info="duration=仅时长, +rms=音量稳定性, +f0=音高稳定性"
+                        )
+                        export_alias_style = gr.Dropdown(
+                            label="别名风格（日语）",
+                            choices=["romaji", "hiragana"],
+                            value="hiragana",
+                            info="日语音源的别名格式"
+                        )
+                    
+                    with gr.Row():
+                        export_overlap_ratio = gr.Number(
+                            label="Overlap 比例",
+                            value=0.3,
+                            minimum=0.1,
+                            maximum=0.5,
+                            info="Overlap = Preutterance × 此比例"
+                        )
+                        export_encoding = gr.Dropdown(
+                            label="文件编码",
+                            choices=["shift_jis", "utf-8", "gbk"],
+                            value="shift_jis",
+                            info="oto.ini 编码（UTAU 标准为 Shift_JIS）"
+                        )
+                    
+                    export_sanitize_filename = gr.Checkbox(
+                        label="文件名转拼音（防止 UTAU 识别故障）",
+                        value=False
                     )
                 
-                with gr.Row():
-                    export_naming = gr.Textbox(
-                        label="命名规则",
-                        value="%p%%n%",
-                        info="%p%=拼音, %n%=序号"
+                # 插件切换时更新选项显示
+                def on_plugin_change(plugin_name):
+                    """切换插件时更新选项区域"""
+                    is_utau = "UTAU" in plugin_name
+                    
+                    # 获取插件描述
+                    desc = ""
+                    if plugin_name in plugins:
+                        desc = f"> {plugins[plugin_name].description}"
+                    
+                    # 获取默认值
+                    default_max = 5 if is_utau else 10
+                    
+                    return (
+                        gr.update(visible=is_utau),  # utau_options_group
+                        desc,  # plugin_desc
+                        default_max,  # export_max_samples
                     )
-                    export_first_naming = gr.Textbox(
-                        label="首个样本命名",
-                        value="%p%",
-                        info="第0个样本的特殊规则"
-                    )
+                
+                export_plugin.change(
+                    fn=on_plugin_change,
+                    inputs=[export_plugin],
+                    outputs=[utau_options_group, plugin_desc, export_max_samples]
+                )
+                
+                # 收集选项并导出
+                def collect_and_export(
+                    zip_file, plugin_name,
+                    max_samples, naming_rule, first_naming_rule,
+                    quality_metrics, alias_style, overlap_ratio, encoding, sanitize_filename,
+                    progress=gr.Progress()
+                ):
+                    """收集所有选项并执行导出"""
+                    # 构建选项字典
+                    options = {
+                        "max_samples": int(max_samples),
+                        "naming_rule": naming_rule,
+                        "first_naming_rule": first_naming_rule,
+                    }
+                    
+                    # UTAU 专用选项
+                    if "UTAU" in plugin_name:
+                        options.update({
+                            "quality_metrics": quality_metrics,
+                            "alias_style": alias_style,
+                            "overlap_ratio": float(overlap_ratio),
+                            "encoding": encoding,
+                            "sanitize_filename": sanitize_filename,
+                        })
+                    
+                    options_json = json.dumps(options, ensure_ascii=False)
+                    return process_export_voicebank(zip_file, plugin_name, options_json, progress)
                 
                 export_btn = gr.Button("📤 开始导出", variant="primary", size="lg")
                 
@@ -706,10 +893,12 @@ def create_cloud_ui():
                 """)
                 
                 export_btn.click(
-                    fn=process_export_voicebank,
+                    fn=collect_and_export,
                     inputs=[
                         export_upload, export_plugin,
-                        export_max_samples, export_naming, export_first_naming
+                        export_max_samples, export_naming, export_first_naming,
+                        export_quality_metrics, export_alias_style, 
+                        export_overlap_ratio, export_encoding, export_sanitize_filename
                     ],
                     outputs=[export_status, export_log, export_download]
                 )

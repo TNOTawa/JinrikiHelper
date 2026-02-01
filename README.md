@@ -69,7 +69,7 @@ tools/
 
 ## 使用方法
 
-### GUI 界面（推荐）
+### GUI 界面（AI推荐我不推荐，我推荐用 main_old.py）
 
 ```bash
 python main.py
