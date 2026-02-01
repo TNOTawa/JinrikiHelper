@@ -873,6 +873,22 @@ class UTAUOtoExportPlugin(ExportPlugin):
         output_path: str,
         encoding: str
     ):
-        """写入 character.txt 文件，用于 UTAU 识别音源名称"""
+        """写入 character.txt 文件，用于 UTAU 识别音源名称
+        
+        注意：当音源名称包含无法用指定编码表示的字符时，
+        自动将名称转换为拼音/罗马音。
+        """
+        name_to_write = source_name
+        
+        # 检测是否能用指定编码
+        try:
+            source_name.encode(encoding)
+        except UnicodeEncodeError:
+            # 无法编码，转换为拼音
+            from pypinyin import lazy_pinyin
+            pinyin_name = ''.join(lazy_pinyin(source_name))
+            logger.warning(f"音源名称 '{source_name}' 无法用 {encoding} 编码，已转换为拼音: {pinyin_name}")
+            name_to_write = pinyin_name
+        
         with open(output_path, 'w', encoding=encoding) as f:
-            f.write(f"name={source_name}")
+            f.write(f"name={name_to_write}")
