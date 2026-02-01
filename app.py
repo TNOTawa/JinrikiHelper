@@ -206,59 +206,7 @@ def setup_mfa_linux():
             else:
                 logger.info("分词依赖已存在")
             
-            # 预下载 pkuseg 模型（使用官方下载函数，但替换为镜像 URL）
-            pkuseg_model_dir = pkuseg_home / "spacy_ontonotes"
-            postag_model_dir = pkuseg_home / "postag"
-            
-            # 检查模型文件是否完整（不仅检查目录存在，还要检查关键文件）
-            model_complete = (
-                (pkuseg_model_dir / "unigram_word.txt").exists() and
-                (postag_model_dir / "features.pkl").exists()
-            )
-            
-            if not model_complete and python_path.exists():
-                logger.info(f"预下载 pkuseg 中文分词模型到 {pkuseg_home}...")
-                
-                # 使用 MFA 环境中的 Python 调用 pkuseg 下载（自动处理解压）
-                # 替换 GitHub URL 为镜像
-                # 注意：必须在设置 PKUSEG_HOME 之后再 import spacy_pkuseg
-                download_script = f'''
-import os
-os.environ["PKUSEG_HOME"] = "{pkuseg_home}"
-
-# 必须在设置环境变量后再导入
-from spacy_pkuseg.config import config
-from spacy_pkuseg.download import download_model
-
-# 确认 pkuseg_home 已正确设置
-print(f"PKUSEG_HOME: {{config.pkuseg_home}}")
-
-# 替换为 GitHub 镜像
-config.model_urls["spacy_ontonotes"] = "https://ghfast.top/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip"
-config.model_urls["postag"] = "https://ghfast.top/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip"
-
-# 下载模型
-download_model(config.model_urls["spacy_ontonotes"], config.pkuseg_home, config.model_hash["spacy_ontonotes"])
-download_model(config.model_urls["postag"], config.pkuseg_home, config.model_hash["postag"])
-print("pkuseg models downloaded")
-'''
-                # 传递环境变量确保子进程也能获取
-                env = os.environ.copy()
-                env["PKUSEG_HOME"] = str(pkuseg_home)
-                
-                result = subprocess.run(
-                    [str(python_path), "-c", download_script],
-                    capture_output=True, text=True, timeout=180,
-                    env=env
-                )
-                if result.returncode == 0:
-                    logger.info("pkuseg 模型下载完成")
-                    logger.info(result.stdout[-500:] if result.stdout else "")
-                else:
-                    logger.error(f"pkuseg 下载失败: {result.stderr[-500:] if result.stderr else result.stdout[-500:]}")
-                    sys.exit(1)
-            else:
-                logger.info(f"pkuseg 模型已存在: {pkuseg_home}")
+            # pkuseg 模型下载移到 download_pkuseg_models() 独立函数中
         
         # 4. 确保 MFA 环境的 bin 目录在 PATH 中
         if mfa_bin_dir.exists() and str(mfa_bin_dir) not in os.environ.get("PATH", ""):
@@ -307,8 +255,8 @@ def download_all_models():
     if not download_mfa_models_all():
         errors.append("MFA")
     
-    # 4. 验证 pkuseg 模型（中文分词必需）
-    if not verify_pkuseg_models():
+    # 4. 下载 pkuseg 模型（中文分词必需，独立下载确保执行）
+    if not download_pkuseg_models():
         errors.append("pkuseg")
     
     if errors:
@@ -323,24 +271,99 @@ def download_all_models():
     logger.info("=" * 50)
 
 
-def verify_pkuseg_models() -> bool:
-    """验证 pkuseg 中文分词模型是否完整"""
-    logger.info("\n【验证 pkuseg 模型】")
+def download_pkuseg_models() -> bool:
+    """下载 pkuseg 中文分词模型，返回是否成功"""
+    logger.info("\n【下载 pkuseg 模型】")
     
     pkuseg_home = Path(os.environ.get("PKUSEG_HOME", "/root/.pkuseg"))
+    pkuseg_home.mkdir(parents=True, exist_ok=True)
     
-    required_files = [
-        pkuseg_home / "spacy_ontonotes" / "unigram_word.txt",
-        pkuseg_home / "postag" / "features.pkl",
+    pkuseg_model_dir = pkuseg_home / "spacy_ontonotes"
+    postag_model_dir = pkuseg_home / "postag"
+    
+    # 检查模型文件是否完整
+    model_complete = (
+        (pkuseg_model_dir / "unigram_word.txt").exists() and
+        (postag_model_dir / "features.pkl").exists()
+    )
+    
+    if model_complete:
+        logger.info(f"pkuseg 模型已存在: {pkuseg_home}")
+        return True
+    
+    # 查找 MFA 环境的 Python
+    mfa_env = Path("/tmp/micromamba/envs/mfa")
+    python_path = mfa_env / "bin" / "python"
+    
+    if not python_path.exists():
+        logger.error(f"MFA Python 不存在: {python_path}")
+        return False
+    
+    logger.info(f"下载 pkuseg 中文分词模型到 {pkuseg_home}...")
+    
+    # 使用 MFA 环境中的 Python 调用 pkuseg 下载
+    # 尝试多个镜像源
+    mirrors = [
+        ("ghfast.top", "https://ghfast.top/https://github.com"),
+        ("gh-proxy.com", "https://gh-proxy.com/https://github.com"),
+        ("原始 GitHub", "https://github.com"),
     ]
     
-    for f in required_files:
-        if not f.exists():
-            logger.error(f"pkuseg 模型文件缺失: {f}")
-            return False
+    for mirror_name, mirror_prefix in mirrors:
+        logger.info(f"尝试使用镜像: {mirror_name}")
+        
+        download_script = f'''
+import os
+os.environ["PKUSEG_HOME"] = "{pkuseg_home}"
+
+from spacy_pkuseg.config import config
+from spacy_pkuseg.download import download_model
+
+print(f"PKUSEG_HOME: {{config.pkuseg_home}}")
+
+# 设置镜像 URL
+config.model_urls["spacy_ontonotes"] = "{mirror_prefix}/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip"
+config.model_urls["postag"] = "{mirror_prefix}/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip"
+
+print(f"下载 spacy_ontonotes: {{config.model_urls['spacy_ontonotes']}}")
+download_model(config.model_urls["spacy_ontonotes"], config.pkuseg_home, config.model_hash["spacy_ontonotes"])
+
+print(f"下载 postag: {{config.model_urls['postag']}}")
+download_model(config.model_urls["postag"], config.pkuseg_home, config.model_hash["postag"])
+
+print("pkuseg models downloaded successfully")
+'''
+        
+        env = os.environ.copy()
+        env["PKUSEG_HOME"] = str(pkuseg_home)
+        
+        try:
+            result = subprocess.run(
+                [str(python_path), "-c", download_script],
+                capture_output=True, text=True, timeout=300,
+                env=env
+            )
+            
+            logger.info(f"stdout: {result.stdout[-1000:] if result.stdout else '(empty)'}")
+            if result.stderr:
+                logger.info(f"stderr: {result.stderr[-500:]}")
+            
+            if result.returncode == 0:
+                # 验证文件是否真的下载成功
+                if (pkuseg_model_dir / "unigram_word.txt").exists() and (postag_model_dir / "features.pkl").exists():
+                    logger.info(f"pkuseg 模型下载成功 (使用 {mirror_name})")
+                    return True
+                else:
+                    logger.warning(f"下载命令成功但文件不存在，尝试下一个镜像")
+            else:
+                logger.warning(f"镜像 {mirror_name} 下载失败: {result.stderr[-300:] if result.stderr else result.stdout[-300:]}")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"镜像 {mirror_name} 下载超时")
+        except Exception as e:
+            logger.warning(f"镜像 {mirror_name} 下载异常: {e}")
     
-    logger.info("pkuseg 模型验证通过")
-    return True
+    logger.error("所有镜像都下载失败")
+    return False
 
 
 def download_silero_vad_model() -> bool:
