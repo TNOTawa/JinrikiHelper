@@ -374,3 +374,22 @@ MFA 环境:
 - 移除 Windows 专用依赖 (customtkinter)
 - 添加 `montreal-forced-aligner` (Linux pip 安装)
 - 保持 gradio 版本与 sdk_version 一致
+
+### 云端 MFA 中文分词依赖
+
+MFA 中文对齐需要 `spacy-pkuseg` 分词器，该分词器会从 GitHub 下载模型文件。由于魔搭创空间无法直接访问 GitHub，`app.py` 会在启动时预下载模型：
+
+**pkuseg 模型文件**:
+- `spacy_ontonotes.zip` - 中文分词模型 (约 30MB)
+- `postag.zip` - 词性标注模型 (约 50MB)
+
+**下载策略**:
+1. 使用 GitHub 镜像 `ghfast.top` 加速下载
+2. 模型保存到持久化目录 `/home/studio_service/models/pkuseg/`
+3. 必须保留 zip 文件（pkuseg 使用 `torch.hub.download_url_to_file` 检查 zip 是否存在）
+4. 设置 `PKUSEG_HOME` 环境变量指向模型目录
+
+**环境变量传递**:
+- `app.py` 启动时设置 `os.environ["PKUSEG_HOME"]`
+- `mfa_runner.py` 的 `_build_mfa_env()` 函数在 Linux 环境下也设置该变量
+- 确保 MFA 子进程能正确找到预下载的模型
