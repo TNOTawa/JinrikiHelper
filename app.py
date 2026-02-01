@@ -198,32 +198,65 @@ def setup_mfa_linux():
             
             # 预下载 pkuseg 模型（避免运行时从 GitHub 下载超时）
             pkuseg_model_path = pkuseg_home / "spacy_ontonotes"
-            if not pkuseg_model_path.exists() and python_path.exists():
+            postag_model_path = pkuseg_home / "postag"
+            if (not pkuseg_model_path.exists() or not postag_model_path.exists()) and python_path.exists():
                 logger.info(f"预下载 pkuseg 中文分词模型到 {pkuseg_home}...")
                 env = os.environ.copy()
                 env["PKUSEG_HOME"] = str(pkuseg_home)
                 
-                # 重试下载（GitHub 访问不稳定）
-                max_retries = 3
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        logger.info(f"下载尝试 {attempt}/{max_retries}...")
-                        result = subprocess.run([
-                            str(python_path), "-c",
-                            "import spacy_pkuseg; spacy_pkuseg.pkuseg(postag=True)"
-                        ], env=env, capture_output=True, text=True, timeout=600)
-                        if result.returncode == 0:
-                            logger.info("pkuseg 模型下载完成")
-                            break
-                        else:
-                            logger.warning(f"尝试 {attempt} 失败: {result.stderr[-200:] if result.stderr else ''}")
-                    except subprocess.TimeoutExpired:
-                        logger.warning(f"尝试 {attempt} 超时")
-                    except Exception as e:
-                        logger.warning(f"尝试 {attempt} 异常: {e}")
+                # 先尝试手动下载模型文件（使用 GitHub 镜像）
+                models_to_download = [
+                    {
+                        "name": "spacy_ontonotes",
+                        "urls": [
+                            "https://ghfast.top/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
+                            "https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
+                        ],
+                        "path": pkuseg_model_path,
+                    },
+                    {
+                        "name": "postag",
+                        "urls": [
+                            "https://ghfast.top/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
+                            "https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
+                        ],
+                        "path": postag_model_path,
+                    },
+                ]
+                
+                import urllib.request
+                import zipfile
+                
+                for model in models_to_download:
+                    if model["path"].exists():
+                        logger.info(f"{model['name']} 已存在")
+                        continue
                     
-                    if attempt == max_retries:
-                        logger.warning("pkuseg 模型下载失败，MFA 中文对齐可能不可用")
+                    downloaded = False
+                    for url in model["urls"]:
+                        try:
+                            logger.info(f"下载 {model['name']} 从 {url[:50]}...")
+                            zip_path = pkuseg_home / f"{model['name']}.zip"
+                            urllib.request.urlretrieve(url, zip_path)
+                            
+                            # 解压
+                            with zipfile.ZipFile(zip_path, 'r') as zf:
+                                zf.extractall(pkuseg_home)
+                            zip_path.unlink()
+                            logger.info(f"{model['name']} 下载完成")
+                            downloaded = True
+                            break
+                        except Exception as e:
+                            logger.warning(f"从 {url[:30]}... 下载失败: {e}")
+                    
+                    if not downloaded:
+                        logger.warning(f"{model['name']} 所有下载源均失败")
+                
+                # 验证模型是否可用
+                if pkuseg_model_path.exists() and postag_model_path.exists():
+                    logger.info("pkuseg 模型下载完成")
+                else:
+                    logger.warning("pkuseg 模型下载不完整，MFA 中文对齐可能不可用")
             else:
                 logger.info(f"pkuseg 模型已存在: {pkuseg_model_path}")
         
