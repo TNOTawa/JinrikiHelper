@@ -252,11 +252,19 @@ def setup_mfa_linux():
                     if not downloaded:
                         logger.warning(f"{model['name']} 所有下载源均失败")
                 
-                # 验证模型是否可用
-                if pkuseg_model_path.exists() and postag_model_path.exists():
+                # 验证模型是否可用（检查目录或文件是否存在）
+                spacy_ok = pkuseg_model_path.exists() or (pkuseg_home / "spacy_ontonotes.zip").exists()
+                postag_ok = postag_model_path.exists() or (pkuseg_home / "postag.zip").exists()
+                
+                # 列出实际下载的内容
+                if pkuseg_home.exists():
+                    contents = list(pkuseg_home.iterdir())
+                    logger.info(f"pkuseg 目录内容: {[c.name for c in contents]}")
+                
+                if spacy_ok and postag_ok:
                     logger.info("pkuseg 模型下载完成")
                 else:
-                    logger.warning("pkuseg 模型下载不完整，MFA 中文对齐可能不可用")
+                    logger.warning(f"pkuseg 模型下载不完整 (spacy_ontonotes: {spacy_ok}, postag: {postag_ok})")
             else:
                 logger.info(f"pkuseg 模型已存在: {pkuseg_model_path}")
         
