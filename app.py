@@ -131,14 +131,23 @@ def setup_mfa_linux():
         
         # 2. 使用 micromamba 创建环境并安装 MFA
         mfa_bin_path = mfa_env / "bin" / "mfa"
+        mfa_bin_dir = mfa_env / "bin"
         need_install = not mfa_bin_path.exists()
         
-        # 如果 mfa 存在但不能正常工作，删除重建
-        if mfa_bin_path.exists() and not verify_mfa_working():
-            logger.info("检测到损坏的 MFA 环境，删除重建...")
-            import shutil as sh
-            sh.rmtree(mfa_env, ignore_errors=True)
-            need_install = True
+        # 如果 mfa 存在，先将其加入 PATH 再验证
+        if mfa_bin_path.exists():
+            # 临时加入 PATH 以便验证
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = f"{mfa_bin_dir}:{old_path}"
+            
+            if not verify_mfa_working():
+                logger.info("检测到损坏的 MFA 环境，删除重建...")
+                os.environ["PATH"] = old_path  # 恢复 PATH
+                import shutil as sh
+                sh.rmtree(mfa_env, ignore_errors=True)
+                need_install = True
+            else:
+                logger.info("MFA 环境验证通过，无需重新安装")
         
         if need_install:
             logger.info("使用 micromamba 安装 MFA...")
@@ -163,9 +172,8 @@ def setup_mfa_linux():
             ], env=env, capture_output=True, text=True, timeout=300)
             logger.info("MFA 安装完成")
         
-        # 3. 将 MFA 环境的 bin 目录加入 PATH
-        mfa_bin_dir = mfa_env / "bin"
-        if mfa_bin_dir.exists():
+        # 3. 确保 MFA 环境的 bin 目录在 PATH 中
+        if mfa_bin_dir.exists() and str(mfa_bin_dir) not in os.environ.get("PATH", ""):
             os.environ["PATH"] = f"{mfa_bin_dir}:{os.environ.get('PATH', '')}"
             logger.info(f"已将 {mfa_bin_dir} 加入 PATH")
             
