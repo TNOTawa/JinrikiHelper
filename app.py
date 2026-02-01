@@ -280,6 +280,8 @@ def download_pkuseg_models() -> bool:
     3. 如果 zip 不存在，从 GitHub 下载
     
     因此我们需要保留 .zip 文件，否则 spacy_pkuseg 会尝试重新下载
+    
+    注意：只需要 spacy_ontonotes.zip，postag.zip 在 GitHub releases 中不存在
     """
     logger.info("\n【下载 pkuseg 模型】")
     
@@ -289,11 +291,11 @@ def download_pkuseg_models() -> bool:
     pkuseg_model_dir = pkuseg_home / "spacy_ontonotes"
     postag_model_dir = pkuseg_home / "postag"
     
-    # 关键：检查 .zip 文件是否存在（spacy_pkuseg 的检查逻辑）
+    # 关键：检查 spacy_ontonotes.zip 是否存在（spacy_pkuseg 的检查逻辑）
+    # postag.zip 在 GitHub releases 中不存在，不需要检查
     spacy_ontonotes_zip = pkuseg_home / "spacy_ontonotes.zip"
-    postag_zip = pkuseg_home / "postag.zip"
     
-    if spacy_ontonotes_zip.exists() and postag_zip.exists():
+    if spacy_ontonotes_zip.exists():
         logger.info(f"pkuseg 模型 zip 文件已存在: {pkuseg_home}")
         # 列出目录内容供调试
         files = [f.name for f in pkuseg_home.iterdir()]
@@ -323,22 +325,18 @@ def download_pkuseg_models() -> bool:
                 src.rename(dst)
                 logger.info(f"移动 {filename} -> postag/")
     
-    # 再次检查（如果有解压后的目录但没有 zip，需要重新下载 zip）
-    need_download = []
-    if not spacy_ontonotes_zip.exists():
-        need_download.append("spacy_ontonotes")
-    if not postag_zip.exists():
-        need_download.append("postag")
-    
-    if not need_download:
+    # 只检查 spacy_ontonotes.zip（这是 spacy_pkuseg 必需的）
+    # postag 模型在 GitHub releases 中不存在，spacy_pkuseg 会使用内置的词性标注
+    if spacy_ontonotes_zip.exists():
         logger.info(f"pkuseg 模型已就绪: {pkuseg_home}")
         return True
     
     # 需要下载模型
-    logger.info(f"需要下载 pkuseg 模型: {need_download}")
+    logger.info("需要下载 pkuseg 模型: spacy_ontonotes")
     
     # 使用 spacy-pkuseg 的模型（新格式 msgpack）
     # 注意：必须保留 .zip 文件，spacy_pkuseg 会检查 zip 是否存在
+    # postag.zip 在 GitHub releases 中不存在，不需要下载
     models = [
         {
             "name": "spacy_ontonotes",
@@ -349,24 +347,10 @@ def download_pkuseg_models() -> bool:
             ],
             "check_file": "features.msgpack",
         },
-        {
-            "name": "postag",
-            "urls": [
-                "https://ghfast.top/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/postag.zip",
-                "https://gh-proxy.com/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/postag.zip",
-                "https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/postag.zip",
-            ],
-            "check_file": "features.msgpack",
-        },
     ]
     
     for model in models:
         model_name = model["name"]
-        
-        # 跳过不需要下载的模型
-        if model_name not in need_download:
-            continue
-        
         model_dir = pkuseg_home / model_name
         zip_path = pkuseg_home / f"{model_name}.zip"
         check_file = model_dir / model["check_file"]
