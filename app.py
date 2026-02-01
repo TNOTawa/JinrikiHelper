@@ -293,15 +293,18 @@ def download_pkuseg_models() -> bool:
     
     logger.info(f"下载 pkuseg 中文分词模型到 {pkuseg_home}...")
     
-    # 直接使用 curl + unzip 下载，不依赖 spacy_pkuseg 的下载函数
+    # 使用原始 pkuseg-python 的旧版模型（包含 unigram_word.txt）
+    # spacy-pkuseg v0.0.26 的模型格式不兼容，需要用 lancopku/pkuseg-python v0.0.16 的模型
     models = [
         {
             "name": "spacy_ontonotes",
+            # 使用 mixed 模型作为 spacy_ontonotes（通用分词模型）
             "urls": [
-                "https://ghfast.top/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
-                "https://gh-proxy.com/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
-                "https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
+                "https://ghfast.top/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/mixed.zip",
+                "https://gh-proxy.com/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/mixed.zip",
+                "https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/mixed.zip",
             ],
+            "zip_inner_name": "mixed",  # zip 内部的目录名
             "check_file": "unigram_word.txt",
         },
         {
@@ -311,14 +314,18 @@ def download_pkuseg_models() -> bool:
                 "https://gh-proxy.com/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
                 "https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
             ],
+            "zip_inner_name": "postag",
             "check_file": "features.pkl",
         },
     ]
+    
+    import shutil
     
     for model in models:
         model_name = model["name"]
         model_dir = pkuseg_home / model_name
         check_file = model_dir / model["check_file"]
+        zip_inner_name = model.get("zip_inner_name", model_name)
         
         if check_file.exists():
             logger.info(f"{model_name} 已存在，跳过")
@@ -346,19 +353,9 @@ def download_pkuseg_models() -> bool:
                 
                 logger.info(f"下载完成，文件大小: {zip_path.stat().st_size} bytes")
                 
-                # 先查看 zip 内容结构
+                # 解压到 pkuseg_home
                 result = subprocess.run(
-                    ["unzip", "-l", str(zip_path)],
-                    capture_output=True, text=True, timeout=30
-                )
-                logger.info(f"zip 内容:\n{result.stdout[:1000]}")
-                
-                # 解压到临时目录
-                temp_extract = pkuseg_home / f"{model_name}_temp"
-                temp_extract.mkdir(exist_ok=True)
-                
-                result = subprocess.run(
-                    ["unzip", "-o", "-q", str(zip_path), "-d", str(temp_extract)],
+                    ["unzip", "-o", "-q", str(zip_path), "-d", str(pkuseg_home)],
                     capture_output=True, text=True, timeout=60
                 )
                 
@@ -366,51 +363,30 @@ def download_pkuseg_models() -> bool:
                     logger.warning(f"unzip 解压失败: {result.stderr}")
                     continue
                 
-                # 列出解压后的内容
-                result = subprocess.run(
-                    ["find", str(temp_extract), "-type", "f", "-name", model["check_file"]],
-                    capture_output=True, text=True, timeout=30
-                )
-                found_files = result.stdout.strip().split('\n') if result.stdout.strip() else []
-                logger.info(f"找到的 {model['check_file']} 文件: {found_files}")
+                # 如果解压出来的目录名和目标名不同，重命名
+                extracted_dir = pkuseg_home / zip_inner_name
+                if extracted_dir.exists() and zip_inner_name != model_name:
+                    if model_dir.exists():
+                        shutil.rmtree(model_dir)
+                    extracted_dir.rename(model_dir)
+                    logger.info(f"重命名 {zip_inner_name} -> {model_name}")
                 
-                # 如果找到了文件，移动到正确位置
-                if found_files and found_files[0]:
-                    found_path = Path(found_files[0])
-                    source_dir = found_path.parent
-                    
-                    # 确保目标目录存在
-                    model_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    # 移动所有文件到目标目录
-                    import shutil
-                    for item in source_dir.iterdir():
-                        dest = model_dir / item.name
-                        if dest.exists():
-                            if dest.is_dir():
-                                shutil.rmtree(dest)
-                            else:
-                                dest.unlink()
-                        shutil.move(str(item), str(dest))
-                    
-                    logger.info(f"已移动文件到 {model_dir}")
-                
-                # 清理
+                # 清理 zip 文件
                 zip_path.unlink(missing_ok=True)
-                import shutil
-                shutil.rmtree(temp_extract, ignore_errors=True)
                 
                 # 验证
                 if check_file.exists():
                     logger.info(f"{model_name} 下载并解压成功")
+                    # 列出目录内容
+                    files = list(model_dir.iterdir())[:10]
+                    logger.info(f"{model_name} 目录内容: {[f.name for f in files]}")
                     downloaded = True
                     break
                 else:
-                    logger.warning(f"处理后文件仍不存在: {check_file}")
-                    # 列出目录内容帮助调试
-                    if model_dir.exists():
-                        files = list(model_dir.iterdir())[:10]
-                        logger.info(f"{model_name} 目录内容: {[f.name for f in files]}")
+                    logger.warning(f"解压后文件不存在: {check_file}")
+                    # 列出 pkuseg_home 内容帮助调试
+                    dirs = [d.name for d in pkuseg_home.iterdir() if d.is_dir()]
+                    logger.info(f"pkuseg_home 目录: {dirs}")
                     
             except subprocess.TimeoutExpired:
                 logger.warning(f"下载超时: {url}")
