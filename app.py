@@ -291,79 +291,97 @@ def download_pkuseg_models() -> bool:
         logger.info(f"pkuseg 模型已存在: {pkuseg_home}")
         return True
     
-    # 查找 MFA 环境的 Python
-    mfa_env = Path("/tmp/micromamba/envs/mfa")
-    python_path = mfa_env / "bin" / "python"
-    
-    if not python_path.exists():
-        logger.error(f"MFA Python 不存在: {python_path}")
-        return False
-    
     logger.info(f"下载 pkuseg 中文分词模型到 {pkuseg_home}...")
     
-    # 使用 MFA 环境中的 Python 调用 pkuseg 下载
-    # 尝试多个镜像源
-    mirrors = [
-        ("ghfast.top", "https://ghfast.top/https://github.com"),
-        ("gh-proxy.com", "https://gh-proxy.com/https://github.com"),
-        ("原始 GitHub", "https://github.com"),
+    # 直接使用 curl + unzip 下载，不依赖 spacy_pkuseg 的下载函数
+    models = [
+        {
+            "name": "spacy_ontonotes",
+            "urls": [
+                "https://ghfast.top/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
+                "https://gh-proxy.com/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
+                "https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
+            ],
+            "check_file": "unigram_word.txt",
+        },
+        {
+            "name": "postag",
+            "urls": [
+                "https://ghfast.top/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
+                "https://gh-proxy.com/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
+                "https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
+            ],
+            "check_file": "features.pkl",
+        },
     ]
     
-    for mirror_name, mirror_prefix in mirrors:
-        logger.info(f"尝试使用镜像: {mirror_name}")
+    for model in models:
+        model_name = model["name"]
+        model_dir = pkuseg_home / model_name
+        check_file = model_dir / model["check_file"]
         
-        download_script = f'''
-import os
-os.environ["PKUSEG_HOME"] = "{pkuseg_home}"
-
-from spacy_pkuseg.config import config
-from spacy_pkuseg.download import download_model
-
-print(f"PKUSEG_HOME: {{config.pkuseg_home}}")
-
-# 设置镜像 URL
-config.model_urls["spacy_ontonotes"] = "{mirror_prefix}/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip"
-config.model_urls["postag"] = "{mirror_prefix}/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip"
-
-print(f"下载 spacy_ontonotes: {{config.model_urls['spacy_ontonotes']}}")
-download_model(config.model_urls["spacy_ontonotes"], config.pkuseg_home, config.model_hash["spacy_ontonotes"])
-
-print(f"下载 postag: {{config.model_urls['postag']}}")
-download_model(config.model_urls["postag"], config.pkuseg_home, config.model_hash["postag"])
-
-print("pkuseg models downloaded successfully")
-'''
+        if check_file.exists():
+            logger.info(f"{model_name} 已存在，跳过")
+            continue
         
-        env = os.environ.copy()
-        env["PKUSEG_HOME"] = str(pkuseg_home)
-        
-        try:
-            result = subprocess.run(
-                [str(python_path), "-c", download_script],
-                capture_output=True, text=True, timeout=300,
-                env=env
-            )
+        downloaded = False
+        for url in model["urls"]:
+            logger.info(f"下载 {model_name}: {url}")
+            zip_path = pkuseg_home / f"{model_name}.zip"
             
-            logger.info(f"stdout: {result.stdout[-1000:] if result.stdout else '(empty)'}")
-            if result.stderr:
-                logger.info(f"stderr: {result.stderr[-500:]}")
-            
-            if result.returncode == 0:
-                # 验证文件是否真的下载成功
-                if (pkuseg_model_dir / "unigram_word.txt").exists() and (postag_model_dir / "features.pkl").exists():
-                    logger.info(f"pkuseg 模型下载成功 (使用 {mirror_name})")
-                    return True
+            try:
+                # 下载
+                result = subprocess.run(
+                    ["curl", "-fsSL", "-o", str(zip_path), url],
+                    capture_output=True, text=True, timeout=120
+                )
+                
+                if result.returncode != 0:
+                    logger.warning(f"curl 下载失败: {result.stderr}")
+                    continue
+                
+                if not zip_path.exists() or zip_path.stat().st_size < 1000:
+                    logger.warning(f"下载文件无效或太小")
+                    continue
+                
+                logger.info(f"下载完成，文件大小: {zip_path.stat().st_size} bytes")
+                
+                # 解压
+                result = subprocess.run(
+                    ["unzip", "-o", "-q", str(zip_path), "-d", str(pkuseg_home)],
+                    capture_output=True, text=True, timeout=60
+                )
+                
+                if result.returncode != 0:
+                    logger.warning(f"unzip 解压失败: {result.stderr}")
+                    continue
+                
+                # 删除 zip 文件
+                zip_path.unlink(missing_ok=True)
+                
+                # 验证
+                if check_file.exists():
+                    logger.info(f"{model_name} 下载并解压成功")
+                    downloaded = True
+                    break
                 else:
-                    logger.warning(f"下载命令成功但文件不存在，尝试下一个镜像")
-            else:
-                logger.warning(f"镜像 {mirror_name} 下载失败: {result.stderr[-300:] if result.stderr else result.stdout[-300:]}")
-        except subprocess.TimeoutExpired:
-            logger.warning(f"镜像 {mirror_name} 下载超时")
-        except Exception as e:
-            logger.warning(f"镜像 {mirror_name} 下载异常: {e}")
+                    logger.warning(f"解压后文件不存在: {check_file}")
+                    # 列出目录内容帮助调试
+                    if model_dir.exists():
+                        files = list(model_dir.iterdir())[:10]
+                        logger.info(f"{model_name} 目录内容: {[f.name for f in files]}")
+                    
+            except subprocess.TimeoutExpired:
+                logger.warning(f"下载超时: {url}")
+            except Exception as e:
+                logger.warning(f"下载异常: {e}")
+        
+        if not downloaded:
+            logger.error(f"{model_name} 所有镜像下载失败")
+            return False
     
-    logger.error("所有镜像都下载失败")
-    return False
+    logger.info("pkuseg 模型下载完成")
+    return True
 
 
 def download_silero_vad_model() -> bool:
