@@ -42,6 +42,13 @@ class SimpleExportPlugin(ExportPlugin):
                 description="按时长排序，保留最长的N个"
             ),
             PluginOption(
+                key="extend_duration",
+                label="头尾拓展（秒）",
+                option_type=OptionType.TEXT,
+                default="0",
+                description="裁剪时头尾各拓展的时长，最大1.5秒。若一边到达边界，另一边继续拓展"
+            ),
+            PluginOption(
                 key="naming_rule",
                 label="命名规则",
                 option_type=OptionType.TEXT,
@@ -83,6 +90,57 @@ class SimpleExportPlugin(ExportPlugin):
         name = rule.replace("%p%", pinyin).replace("%n%", str(index))
         return name
     
+    def _apply_extend(
+        self,
+        start_time: float,
+        end_time: float,
+        extend_duration: float,
+        audio_duration: float
+    ) -> Tuple[float, float]:
+        """
+        应用头尾拓展
+        
+        头尾各拓展 extend_duration 秒，若一边到达边界则另一边继续拓展
+        
+        参数:
+            start_time: 原始开始时间
+            end_time: 原始结束时间
+            extend_duration: 单边拓展时长
+            audio_duration: 音频总时长
+        
+        返回:
+            (实际开始时间, 实际结束时间)
+        """
+        if extend_duration <= 0:
+            return start_time, end_time
+        
+        total_extend = extend_duration * 2  # 总拓展量
+        
+        # 先尝试头尾各拓展
+        head_extend = extend_duration
+        tail_extend = extend_duration
+        
+        # 检查头部是否到达边界
+        if start_time - head_extend < 0:
+            head_actual = start_time  # 头部只能拓展到0
+            head_remaining = head_extend - head_actual  # 剩余量转给尾部
+            tail_extend += head_remaining
+            head_extend = head_actual
+        
+        # 检查尾部是否到达边界
+        if end_time + tail_extend > audio_duration:
+            tail_actual = audio_duration - end_time  # 尾部只能拓展到边界
+            tail_remaining = tail_extend - tail_actual  # 剩余量转给头部
+            # 头部再次尝试拓展（如果还有空间）
+            additional_head = min(tail_remaining, start_time - (start_time - head_extend))
+            head_extend = min(start_time, head_extend + tail_remaining)
+            tail_extend = tail_actual
+        
+        actual_start = max(0, start_time - head_extend)
+        actual_end = min(audio_duration, end_time + tail_extend)
+        
+        return actual_start, actual_end
+    
     def export(
         self,
         source_name: str,
@@ -105,13 +163,19 @@ class SimpleExportPlugin(ExportPlugin):
             temp_base = os.path.join(bank_dir, ".temp_segments")
             segments_dir = os.path.join(temp_base, source_name)
             
+            # 获取头尾拓展参数
+            extend_duration = min(float(options.get("extend_duration", 0)), 1.5)
+            
             # 步骤1: 提取分词片段
             self._log("【提取分词片段】")
+            if extend_duration > 0:
+                self._log(f"头尾拓展: {extend_duration}s（单边到达边界时另一边继续拓展）")
             success, msg, pinyin_counts = self._extract_segments(
                 paths["slices_dir"],
                 paths["textgrid_dir"],
                 segments_dir,
-                language
+                language,
+                extend_duration
             )
             if not success:
                 return False, msg
@@ -146,13 +210,17 @@ class SimpleExportPlugin(ExportPlugin):
         slices_dir: str,
         textgrid_dir: str,
         segments_dir: str,
-        language: str
+        language: str,
+        extend_duration: float = 0.0
     ) -> Tuple[bool, str, Dict[str, int]]:
         """
         提取分词片段
         
         中文：使用words层按字切分，用char_to_pinyin获取拼音名称
         日语：使用phones层按音素切分，合并辅音+元音为音节
+        
+        参数:
+            extend_duration: 头尾拓展总时长（秒），单边到达边界时另一边继续拓展
         """
         try:
             import textgrid
@@ -169,11 +237,11 @@ class SimpleExportPlugin(ExportPlugin):
             # 根据语言选择提取方法
             if language in ("japanese", "ja", "jp"):
                 return self._extract_japanese_segments(
-                    tg_files, slices_dir, segments_dir
+                    tg_files, slices_dir, segments_dir, extend_duration
                 )
             else:
                 return self._extract_chinese_segments(
-                    tg_files, slices_dir, segments_dir, language
+                    tg_files, slices_dir, segments_dir, language, extend_duration
                 )
             
         except Exception as e:
@@ -185,12 +253,16 @@ class SimpleExportPlugin(ExportPlugin):
         tg_files: List[str],
         slices_dir: str,
         segments_dir: str,
-        language: str
+        language: str,
+        extend_duration: float = 0.0
     ) -> Tuple[bool, str, Dict[str, int]]:
         """
         中文音频提取
         
         使用words层的时间边界，按字符切分，用char_to_pinyin获取拼音
+        
+        参数:
+            extend_duration: 头尾拓展总时长（秒），单边到达边界时另一边继续拓展
         """
         import textgrid
         import soundfile as sf
@@ -208,6 +280,7 @@ class SimpleExportPlugin(ExportPlugin):
             
             tg = textgrid.TextGrid.fromFile(tg_path)
             audio, sr = sf.read(wav_path, dtype='float32')
+            audio_duration = len(audio) / sr
             
             # 使用words层（第一层）
             words_tier = tg[0]
@@ -240,6 +313,11 @@ class SimpleExportPlugin(ExportPlugin):
                     char_start = start_time + i * char_duration
                     char_end = char_start + char_duration
                     
+                    # 应用头尾拓展，单边到达边界时另一边继续拓展
+                    actual_start, actual_end = self._apply_extend(
+                        char_start, char_end, extend_duration, audio_duration
+                    )
+                    
                     pinyin_dir = os.path.join(segments_dir, pinyin)
                     os.makedirs(pinyin_dir, exist_ok=True)
                     
@@ -247,8 +325,8 @@ class SimpleExportPlugin(ExportPlugin):
                     index = current_count + 1
                     pinyin_counts[pinyin] = index
                     
-                    start_sample = int(round(char_start * sr))
-                    end_sample = int(round(char_end * sr))
+                    start_sample = int(round(actual_start * sr))
+                    end_sample = int(round(actual_end * sr))
                     segment = audio[start_sample:end_sample]
                     
                     if len(segment) == 0:
@@ -267,12 +345,16 @@ class SimpleExportPlugin(ExportPlugin):
         self,
         tg_files: List[str],
         slices_dir: str,
-        segments_dir: str
+        segments_dir: str,
+        extend_duration: float = 0.0
     ) -> Tuple[bool, str, Dict[str, int]]:
         """
         日语音频提取
         
         使用phones层，将辅音+元音合并为音节
+        
+        参数:
+            extend_duration: 头尾拓展总时长（秒），单边到达边界时另一边继续拓展
         """
         import textgrid
         import soundfile as sf
@@ -289,6 +371,7 @@ class SimpleExportPlugin(ExportPlugin):
             
             tg = textgrid.TextGrid.fromFile(tg_path)
             audio, sr = sf.read(wav_path, dtype='float32')
+            audio_duration = len(audio) / sr
             
             # 查找phones层
             phones_tier = None
@@ -316,6 +399,11 @@ class SimpleExportPlugin(ExportPlugin):
                 if not normalized:
                     continue
                 
+                # 应用头尾拓展，单边到达边界时另一边继续拓展
+                actual_start, actual_end = self._apply_extend(
+                    start_time, end_time, extend_duration, audio_duration
+                )
+                
                 phone_dir = os.path.join(segments_dir, normalized)
                 os.makedirs(phone_dir, exist_ok=True)
                 
@@ -323,8 +411,8 @@ class SimpleExportPlugin(ExportPlugin):
                 index = current_count + 1
                 phone_counts[normalized] = index
                 
-                start_sample = int(round(start_time * sr))
-                end_sample = int(round(end_time * sr))
+                start_sample = int(round(actual_start * sr))
+                end_sample = int(round(actual_end * sr))
                 segment = audio[start_sample:end_sample]
                 
                 if len(segment) == 0:

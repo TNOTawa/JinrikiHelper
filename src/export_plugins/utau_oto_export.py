@@ -239,6 +239,13 @@ class UTAUOtoExportPlugin(ExportPlugin):
                 option_type=OptionType.LABEL
             ),
             PluginOption(
+                key="cross_language",
+                label="跨语种导出",
+                option_type=OptionType.SWITCH,
+                default=False,
+                description="【TODO】启用中跨日或日跨中的音素映射导出"
+            ),
+            PluginOption(
                 key="max_samples",
                 label="每个别名最大样本数",
                 option_type=OptionType.NUMBER,
@@ -285,6 +292,13 @@ class UTAUOtoExportPlugin(ExportPlugin):
                 min_value=0.1,
                 max_value=0.5,
                 description="Overlap = Preutterance × 此比例"
+            ),
+            PluginOption(
+                key="auto_phoneme_combine",
+                label="自动拼字",
+                option_type=OptionType.SWITCH,
+                default=False,
+                description="【TODO】尽可能用已有的音素拆分拼接成缺失的音素"
             ),
             PluginOption(
                 key="encoding",

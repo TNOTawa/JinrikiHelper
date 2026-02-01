@@ -534,29 +534,11 @@ def get_plugin_options_config(plugins: Dict[str, Any]) -> Dict[str, List[Dict]]:
                 "choices": opt.choices,
                 "min_value": opt.min_value,
                 "max_value": opt.max_value,
+                "step": opt.step,
             }
             options.append(opt_config)
         config[name] = options
     return config
-
-
-def build_plugin_options_html(plugin_name: str, plugins_config: Dict) -> str:
-    """
-    根据插件选项生成 HTML 表单
-    
-    这个方法生成一个简单的 HTML 表单，用于在 Gradio 中显示插件选项
-    """
-    if plugin_name not in plugins_config:
-        return "<p>未找到插件配置</p>"
-    
-    options = plugins_config[plugin_name]
-    html_parts = []
-    
-    for opt in options:
-        if opt["type"] == "label":
-            html_parts.append(f'<p style="color: #666; font-style: italic;">{opt["label"]}</p>')
-    
-    return "\n".join(html_parts) if html_parts else ""
 
 
 def get_default_options_json(plugin_name: str, plugins_config: Dict) -> str:
@@ -571,6 +553,145 @@ def get_default_options_json(plugin_name: str, plugins_config: Dict) -> str:
             defaults[opt["key"]] = opt["default"]
     
     return json.dumps(defaults, ensure_ascii=False)
+
+
+def create_dynamic_plugin_options(plugins: Dict[str, Any], plugins_config: Dict) -> Tuple[Dict[str, Any], callable]:
+    """
+    创建动态插件选项组件
+    
+    返回:
+        (组件字典, 收集选项函数)
+        
+    组件字典结构: {
+        "container": gr.Column,  # 主容器
+        "groups": {插件名: gr.Group},  # 每个插件的选项组
+        "components": {插件名: {选项key: 组件}},  # 所有组件
+    }
+    """
+    from src.export_plugins.base import OptionType
+    
+    all_groups = {}
+    all_components = {}
+    
+    # 为每个插件创建选项组
+    for plugin_name, options in plugins_config.items():
+        plugin_components = {}
+        
+        # 创建该插件的选项组（初始隐藏，第一个插件除外）
+        is_first = (plugin_name == list(plugins_config.keys())[0])
+        
+        with gr.Group(visible=is_first) as plugin_group:
+            # 显示插件描述
+            if plugin_name in plugins:
+                gr.Markdown(f"> {plugins[plugin_name].description}")
+            
+            for opt in options:
+                opt_type = opt["type"]
+                key = opt["key"]
+                label = opt["label"]
+                default = opt["default"]
+                description = opt.get("description", "")
+                choices = opt.get("choices", [])
+                min_val = opt.get("min_value")
+                max_val = opt.get("max_value")
+                step = opt.get("step")
+                
+                # 根据类型创建对应的 Gradio 组件
+                if opt_type == "label":
+                    # 纯文本标签
+                    gr.Markdown(f"*{label}*")
+                    continue
+                    
+                elif opt_type == "text":
+                    component = gr.Textbox(
+                        label=label,
+                        value=default or "",
+                        info=description
+                    )
+                    
+                elif opt_type == "number":
+                    component = gr.Number(
+                        label=label,
+                        value=default if default is not None else 0,
+                        minimum=min_val,
+                        maximum=max_val,
+                        step=step or 1,
+                        info=description
+                    )
+                    
+                elif opt_type == "switch":
+                    component = gr.Checkbox(
+                        label=label,
+                        value=bool(default),
+                        info=description
+                    )
+                    
+                elif opt_type == "combo":
+                    component = gr.Dropdown(
+                        label=label,
+                        choices=choices,
+                        value=default if default in choices else (choices[0] if choices else None),
+                        info=description
+                    )
+                    
+                elif opt_type == "multi_select":
+                    component = gr.CheckboxGroup(
+                        label=label,
+                        choices=choices,
+                        value=default if isinstance(default, list) else [],
+                        info=description
+                    )
+                    
+                else:
+                    # 未知类型，使用文本框
+                    component = gr.Textbox(
+                        label=label,
+                        value=str(default) if default else "",
+                        info=description
+                    )
+                
+                plugin_components[key] = component
+        
+        all_groups[plugin_name] = plugin_group
+        all_components[plugin_name] = plugin_components
+    
+    return all_groups, all_components
+
+
+def build_options_collector(plugins_config: Dict, all_components: Dict):
+    """
+    构建选项收集函数
+    
+    返回一个函数，该函数接收插件名和所有组件值，返回选项字典
+    """
+    # 构建组件到选项的映射
+    component_keys = {}
+    for plugin_name, components in all_components.items():
+        component_keys[plugin_name] = list(components.keys())
+    
+    def collect_options(plugin_name: str, *values) -> Dict[str, Any]:
+        """收集当前插件的选项值"""
+        if plugin_name not in component_keys:
+            return {}
+        
+        keys = component_keys[plugin_name]
+        options = {}
+        
+        # 计算当前插件的值在 values 中的起始位置
+        start_idx = 0
+        for pname in component_keys:
+            if pname == plugin_name:
+                break
+            start_idx += len(component_keys[pname])
+        
+        # 提取当前插件的值
+        for i, key in enumerate(keys):
+            if start_idx + i < len(values):
+                options[key] = values[start_idx + i]
+        
+        return options
+    
+    return collect_options
 
 
 # ==================== 构建界面 ====================
@@ -743,128 +864,126 @@ def create_cloud_ui():
                     label="导出插件"
                 )
                 
-                # 插件描述
-                plugin_desc = gr.Markdown(
-                    value=f"> {plugins[plugin_names[0]].description}" if plugin_names and plugin_names[0] in plugins else ""
-                )
-                
-                # 存储当前选项的 JSON（隐藏）
-                options_state = gr.State(
-                    value=get_default_options_json(plugin_names[0], plugins_config) if plugin_names else "{}"
-                )
-                
                 # ===== 动态选项区域 =====
-                # 使用 gr.Group 包裹所有可能的选项组件，通过 visible 控制显示
+                # 为每个插件动态创建选项组件
+                all_plugin_groups = {}
+                all_plugin_components = {}
                 
-                # 通用选项（两个插件都有）
-                with gr.Group():
-                    gr.Markdown("#### 基本设置")
-                    with gr.Row():
-                        export_max_samples = gr.Number(
-                            label="每个拼音/别名最大样本数",
-                            value=10,
-                            minimum=1,
-                            maximum=1000
-                        )
+                for idx, (pname, poptions) in enumerate(plugins_config.items()):
+                    is_first = (idx == 0)
+                    plugin_components = {}
                     
-                    with gr.Row():
-                        export_naming = gr.Textbox(
-                            label="命名规则",
-                            value="%p%%n%",
-                            info="%p%=拼音/罗马音, %n%=序号"
-                        )
-                        export_first_naming = gr.Textbox(
-                            label="首个样本命名",
-                            value="%p%",
-                            info="第0个样本的特殊规则"
-                        )
+                    with gr.Group(visible=is_first) as plugin_group:
+                        # 插件描述
+                        if pname in plugins:
+                            gr.Markdown(f"> {plugins[pname].description}")
+                        
+                        # 动态创建选项组件
+                        for opt in poptions:
+                            opt_type = opt["type"]
+                            key = opt["key"]
+                            label = opt["label"]
+                            default = opt["default"]
+                            description = opt.get("description", "")
+                            choices = opt.get("choices", [])
+                            min_val = opt.get("min_value")
+                            max_val = opt.get("max_value")
+                            step = opt.get("step")
+                            
+                            if opt_type == "label":
+                                gr.Markdown(f"*{label}*")
+                                continue
+                            elif opt_type == "text":
+                                component = gr.Textbox(
+                                    label=label,
+                                    value=default or "",
+                                    info=description
+                                )
+                            elif opt_type == "number":
+                                component = gr.Number(
+                                    label=label,
+                                    value=default if default is not None else 0,
+                                    minimum=min_val,
+                                    maximum=max_val,
+                                    step=step or 1,
+                                    info=description
+                                )
+                            elif opt_type == "switch":
+                                component = gr.Checkbox(
+                                    label=label,
+                                    value=bool(default),
+                                    info=description
+                                )
+                            elif opt_type == "combo":
+                                component = gr.Dropdown(
+                                    label=label,
+                                    choices=choices,
+                                    value=default if default in choices else (choices[0] if choices else None),
+                                    info=description
+                                )
+                            elif opt_type == "multi_select":
+                                component = gr.CheckboxGroup(
+                                    label=label,
+                                    choices=choices,
+                                    value=default if isinstance(default, list) else [],
+                                    info=description
+                                )
+                            else:
+                                component = gr.Textbox(
+                                    label=label,
+                                    value=str(default) if default else "",
+                                    info=description
+                                )
+                            
+                            plugin_components[key] = component
+                    
+                    all_plugin_groups[pname] = plugin_group
+                    all_plugin_components[pname] = plugin_components
                 
-                # UTAU 专用选项
-                with gr.Group(visible=False) as utau_options_group:
-                    gr.Markdown("#### UTAU 专用设置")
-                    with gr.Row():
-                        export_quality_metrics = gr.Dropdown(
-                            label="质量评估维度",
-                            choices=["duration", "duration+rms", "duration+f0", "all"],
-                            value="duration+rms",
-                            info="duration=仅时长, +rms=音量稳定性, +f0=音高稳定性"
-                        )
-                        export_alias_style = gr.Dropdown(
-                            label="别名风格（日语）",
-                            choices=["romaji", "hiragana"],
-                            value="hiragana",
-                            info="日语音源的别名格式"
-                        )
-                    
-                    with gr.Row():
-                        export_overlap_ratio = gr.Number(
-                            label="Overlap 比例",
-                            value=0.3,
-                            minimum=0.1,
-                            maximum=0.5,
-                            info="Overlap = Preutterance × 此比例"
-                        )
-                        export_encoding = gr.Dropdown(
-                            label="文件编码",
-                            choices=["shift_jis", "utf-8", "gbk"],
-                            value="shift_jis",
-                            info="oto.ini 编码（UTAU 标准为 Shift_JIS）"
-                        )
-                    
-                    export_sanitize_filename = gr.Checkbox(
-                        label="文件名转拼音（防止 UTAU 识别故障）",
-                        value=False
-                    )
+                # 插件切换时更新选项组可见性
+                def on_plugin_change(selected_plugin):
+                    """切换插件时更新选项区域可见性"""
+                    updates = []
+                    for pname in plugins_config.keys():
+                        updates.append(gr.update(visible=(pname == selected_plugin)))
+                    return updates
                 
-                # 插件切换时更新选项显示
-                def on_plugin_change(plugin_name):
-                    """切换插件时更新选项区域"""
-                    is_utau = "UTAU" in plugin_name
-                    
-                    # 获取插件描述
-                    desc = ""
-                    if plugin_name in plugins:
-                        desc = f"> {plugins[plugin_name].description}"
-                    
-                    # 获取默认值
-                    default_max = 5 if is_utau else 10
-                    
-                    return (
-                        gr.update(visible=is_utau),  # utau_options_group
-                        desc,  # plugin_desc
-                        default_max,  # export_max_samples
-                    )
-                
+                # 绑定插件切换事件
                 export_plugin.change(
                     fn=on_plugin_change,
                     inputs=[export_plugin],
-                    outputs=[utau_options_group, plugin_desc, export_max_samples]
+                    outputs=list(all_plugin_groups.values())
                 )
                 
                 # 收集选项并导出
-                def collect_and_export(
-                    zip_file, plugin_name,
-                    max_samples, naming_rule, first_naming_rule,
-                    quality_metrics, alias_style, overlap_ratio, encoding, sanitize_filename,
-                    progress=gr.Progress()
-                ):
-                    """收集所有选项并执行导出"""
-                    # 构建选项字典
-                    options = {
-                        "max_samples": int(max_samples),
-                        "naming_rule": naming_rule,
-                        "first_naming_rule": first_naming_rule,
-                    }
+                def collect_and_export(zip_file, plugin_name, *all_values, progress=gr.Progress()):
+                    """收集当前插件的选项并执行导出"""
+                    # 根据插件名找到对应的选项配置
+                    if plugin_name not in plugins_config:
+                        return "❌ 未找到插件配置", "", None
                     
-                    # UTAU 专用选项
-                    if "UTAU" in plugin_name:
-                        options.update({
-                            "quality_metrics": quality_metrics,
-                            "alias_style": alias_style,
-                            "overlap_ratio": float(overlap_ratio),
-                            "encoding": encoding,
-                            "sanitize_filename": sanitize_filename,
-                        })
+                    # 计算当前插件的值在 all_values 中的位置
+                    start_idx = 0
+                    for pname in plugins_config.keys():
+                        if pname == plugin_name:
+                            break
+                        # 统计该插件的非 label 选项数量
+                        start_idx += sum(1 for opt in plugins_config[pname] if opt["type"] != "label")
+                    
+                    # 提取当前插件的选项值
+                    options = {}
+                    current_idx = start_idx
+                    for opt in plugins_config[plugin_name]:
+                        if opt["type"] == "label":
+                            continue
+                        key = opt["key"]
+                        if current_idx < len(all_values):
+                            value = all_values[current_idx]
+                            # 类型转换
+                            if opt["type"] == "number":
+                                value = float(value) if value is not None else opt["default"]
+                            options[key] = value
+                        current_idx += 1
                     
                     options_json = json.dumps(options, ensure_ascii=False)
                     return process_export_voicebank(zip_file, plugin_name, options_json, progress)
@@ -884,14 +1003,17 @@ def create_cloud_ui():
                 > - 导出为适配其他软件的音源格式
                 """)
                 
+                # 收集所有插件的所有组件作为输入
+                all_option_components = []
+                for pname in plugins_config.keys():
+                    if pname in all_plugin_components:
+                        for opt in plugins_config[pname]:
+                            if opt["type"] != "label" and opt["key"] in all_plugin_components[pname]:
+                                all_option_components.append(all_plugin_components[pname][opt["key"]])
+                
                 export_btn.click(
                     fn=collect_and_export,
-                    inputs=[
-                        export_upload, export_plugin,
-                        export_max_samples, export_naming, export_first_naming,
-                        export_quality_metrics, export_alias_style, 
-                        export_overlap_ratio, export_encoding, export_sanitize_filename
-                    ],
+                    inputs=[export_upload, export_plugin] + all_option_components,
                     outputs=[export_status, export_log, export_download]
                 )
             
