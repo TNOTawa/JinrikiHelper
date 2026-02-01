@@ -54,10 +54,6 @@ class CloudConfig:
     LANGUAGES = ["chinese", "japanese"]
 
 
-# 全局状态：存储最近制作的音源包路径
-_last_made_voicebank: Optional[str] = None
-
-
 def create_temp_workspace() -> str:
     """创建临时工作空间"""
     workspace_id = str(uuid.uuid4())[:8]
@@ -77,11 +73,12 @@ def cleanup_workspace(workspace: str):
 
 
 def create_zip(source_dir: str, zip_name: str) -> Optional[str]:
-    """打包目录为 zip"""
+    """打包目录为 zip（使用 uuid 避免多用户冲突）"""
     if not os.path.isdir(source_dir):
         return None
     try:
-        zip_path = os.path.join(CloudConfig.TEMP_BASE, f"{zip_name}.zip")
+        unique_id = str(uuid.uuid4())[:8]
+        zip_path = os.path.join(CloudConfig.TEMP_BASE, f"{zip_name}_{unique_id}.zip")
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for root, dirs, files in os.walk(source_dir):
                 for file in files:
@@ -156,13 +153,12 @@ def process_make_voicebank(
     language: str,
     whisper_model: str,
     progress=gr.Progress()
-) -> Tuple[str, str, Optional[str]]:
+) -> Tuple[str, str, Optional[str], Optional[str]]:
     """
     制作音源：上传音频 → VAD切片 → Whisper转录 → MFA对齐 → 打包下载
     
-    返回: (状态, 日志, 下载文件路径)
+    返回: (状态, 日志, 下载文件路径, 会话存储的音源包路径)
     """
-    global _last_made_voicebank
     from src.pipeline import PipelineConfig, VoiceBankPipeline
     
     logs = []
@@ -172,13 +168,13 @@ def process_make_voicebank(
     
     # 验证输入
     if not source_name or not source_name.strip():
-        return "❌ 请输入音源名称", "", None
+        return "❌ 请输入音源名称", "", None, None
     
     source_name = source_name.strip()
     
     valid, msg, file_paths = validate_audio_upload(audio_files)
     if not valid:
-        return f"❌ {msg}", "", None
+        return f"❌ {msg}", "", None, None
     
     log(f"📁 {msg}")
     
@@ -250,7 +246,7 @@ def process_make_voicebank(
         log("【步骤1】VAD切片 + Whisper转录")
         success, msg, slices = pipeline.step0_preprocess()
         if not success:
-            return f"❌ 预处理失败: {msg}", "\n".join(logs), None
+            return f"❌ 预处理失败: {msg}", "\n".join(logs), None, None
         log(f"✅ {msg}")
         
         # 步骤1: MFA对齐
@@ -280,15 +276,14 @@ def process_make_voicebank(
         if zip_path:
             log(f"📦 已打包: {os.path.basename(zip_path)}")
             progress(1.0, desc="完成")
-            # 保存到全局状态，供导出页面使用
-            _last_made_voicebank = zip_path
-            return "✅ 音源制作完成", "\n".join(logs), zip_path
+            # 返回路径到会话状态，供导出页面使用
+            return "✅ 音源制作完成", "\n".join(logs), zip_path, zip_path
         else:
-            return "❌ 打包失败", "\n".join(logs), None
+            return "❌ 打包失败", "\n".join(logs), None, None
         
     except Exception as e:
         logger.error(f"制作音源失败: {e}", exc_info=True)
-        return f"❌ 处理失败: {e}", "\n".join(logs), None
+        return f"❌ 处理失败: {e}", "\n".join(logs), None, None
     
     finally:
         # 清理工作空间（保留zip文件）
@@ -297,18 +292,20 @@ def process_make_voicebank(
 
 # ==================== 导出音源功能 ====================
 
-def get_last_made_voicebank() -> Tuple[Optional[str], str]:
+def get_last_made_voicebank(session_voicebank: Optional[str]) -> Tuple[Optional[str], str]:
     """
-    获取最近制作的音源包
+    获取当前会话制作的音源包
+    
+    参数:
+        session_voicebank: 会话状态中存储的音源包路径
     
     返回: (文件路径, 信息消息)
     """
-    global _last_made_voicebank
-    if _last_made_voicebank and os.path.exists(_last_made_voicebank):
-        valid, msg, name = validate_voicebank_zip_path(_last_made_voicebank)
+    if session_voicebank and os.path.exists(session_voicebank):
+        valid, msg, name = validate_voicebank_zip_path(session_voicebank)
         if valid:
-            return _last_made_voicebank, f"✅ 已选择刚制作的音源: {name}"
-    return None, ""
+            return session_voicebank, f"✅ 已选择刚制作的音源: {name}"
+    return None, "❌ 没有找到刚制作的音源，请先在「制作音源」页面制作，或手动上传"
 
 
 def validate_voicebank_zip_path(zip_path: str) -> Tuple[bool, str, Optional[str]]:
@@ -595,6 +592,9 @@ def create_cloud_ui():
         theme=gr.themes.Soft()
     ) as app:
         
+        # 会话状态：存储当前用户制作的音源包路径
+        session_voicebank = gr.State(value=None)
+        
         gr.Markdown("# 🎤 人力V助手 (JinrikiHelper)")
         gr.Markdown("语音数据集处理工具 - 自动化制作语音音源库")
         gr.Markdown("> ☁️ 云端版：上传音频 → 自动处理 → 下载结果")
@@ -688,7 +688,7 @@ def create_cloud_ui():
                 make_btn.click(
                     fn=process_make_voicebank,
                     inputs=[audio_upload, make_source_name, make_language, make_whisper],
-                    outputs=[make_status, make_log, make_download]
+                    outputs=[make_status, make_log, make_download, session_voicebank]
                 )
             
             # ==================== 导出音源页 ====================
@@ -725,17 +725,9 @@ def create_cloud_ui():
                 )
                 
                 # 使用刚制作的音源
-                def use_last_voicebank():
-                    """使用刚制作的音源包"""
-                    path, msg = get_last_made_voicebank()
-                    if path:
-                        # 返回文件路径和信息
-                        return path, msg
-                    return None, "❌ 没有找到刚制作的音源，请先在「制作音源」页面制作，或手动上传"
-                
                 use_last_btn.click(
-                    fn=use_last_voicebank,
-                    inputs=[],
+                    fn=get_last_made_voicebank,
+                    inputs=[session_voicebank],
                     outputs=[export_upload, export_info]
                 )
                 
