@@ -346,9 +346,19 @@ def download_pkuseg_models() -> bool:
                 
                 logger.info(f"下载完成，文件大小: {zip_path.stat().st_size} bytes")
                 
-                # 解压
+                # 先查看 zip 内容结构
                 result = subprocess.run(
-                    ["unzip", "-o", "-q", str(zip_path), "-d", str(pkuseg_home)],
+                    ["unzip", "-l", str(zip_path)],
+                    capture_output=True, text=True, timeout=30
+                )
+                logger.info(f"zip 内容:\n{result.stdout[:1000]}")
+                
+                # 解压到临时目录
+                temp_extract = pkuseg_home / f"{model_name}_temp"
+                temp_extract.mkdir(exist_ok=True)
+                
+                result = subprocess.run(
+                    ["unzip", "-o", "-q", str(zip_path), "-d", str(temp_extract)],
                     capture_output=True, text=True, timeout=60
                 )
                 
@@ -356,8 +366,39 @@ def download_pkuseg_models() -> bool:
                     logger.warning(f"unzip 解压失败: {result.stderr}")
                     continue
                 
-                # 删除 zip 文件
+                # 列出解压后的内容
+                result = subprocess.run(
+                    ["find", str(temp_extract), "-type", "f", "-name", model["check_file"]],
+                    capture_output=True, text=True, timeout=30
+                )
+                found_files = result.stdout.strip().split('\n') if result.stdout.strip() else []
+                logger.info(f"找到的 {model['check_file']} 文件: {found_files}")
+                
+                # 如果找到了文件，移动到正确位置
+                if found_files and found_files[0]:
+                    found_path = Path(found_files[0])
+                    source_dir = found_path.parent
+                    
+                    # 确保目标目录存在
+                    model_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # 移动所有文件到目标目录
+                    import shutil
+                    for item in source_dir.iterdir():
+                        dest = model_dir / item.name
+                        if dest.exists():
+                            if dest.is_dir():
+                                shutil.rmtree(dest)
+                            else:
+                                dest.unlink()
+                        shutil.move(str(item), str(dest))
+                    
+                    logger.info(f"已移动文件到 {model_dir}")
+                
+                # 清理
                 zip_path.unlink(missing_ok=True)
+                import shutil
+                shutil.rmtree(temp_extract, ignore_errors=True)
                 
                 # 验证
                 if check_file.exists():
@@ -365,7 +406,7 @@ def download_pkuseg_models() -> bool:
                     downloaded = True
                     break
                 else:
-                    logger.warning(f"解压后文件不存在: {check_file}")
+                    logger.warning(f"处理后文件仍不存在: {check_file}")
                     # 列出目录内容帮助调试
                     if model_dir.exists():
                         files = list(model_dir.iterdir())[:10]
@@ -375,6 +416,8 @@ def download_pkuseg_models() -> bool:
                 logger.warning(f"下载超时: {url}")
             except Exception as e:
                 logger.warning(f"下载异常: {e}")
+                import traceback
+                logger.warning(traceback.format_exc())
         
         if not downloaded:
             logger.error(f"{model_name} 所有镜像下载失败")
