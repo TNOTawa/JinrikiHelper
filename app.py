@@ -197,35 +197,33 @@ def setup_mfa_linux():
                 logger.info("分词依赖已存在")
             
             # 预下载 pkuseg 模型（避免运行时从 GitHub 下载超时）
-            pkuseg_model_path = pkuseg_home / "spacy_ontonotes"
-            postag_model_path = pkuseg_home / "postag"
-            if (not pkuseg_model_path.exists() or not postag_model_path.exists()) and python_path.exists():
+            # pkuseg 检查的是 zip 文件，不是解压后的目录
+            pkuseg_model_zip = pkuseg_home / "spacy_ontonotes.zip"
+            postag_model_zip = pkuseg_home / "postag.zip"
+            if (not pkuseg_model_zip.exists() or not postag_model_zip.exists()) and python_path.exists():
                 logger.info(f"预下载 pkuseg 中文分词模型到 {pkuseg_home}...")
-                env = os.environ.copy()
-                env["PKUSEG_HOME"] = str(pkuseg_home)
                 
-                # 先尝试手动下载模型文件（使用 GitHub 镜像）
+                # 手动下载模型文件（使用 GitHub 镜像）
                 models_to_download = [
                     {
-                        "name": "spacy_ontonotes",
+                        "name": "spacy_ontonotes.zip",
                         "urls": [
                             "https://ghfast.top/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
                             "https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
                         ],
-                        "path": pkuseg_model_path,
+                        "path": pkuseg_model_zip,
                     },
                     {
-                        "name": "postag",
+                        "name": "postag.zip",
                         "urls": [
                             "https://ghfast.top/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
                             "https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
                         ],
-                        "path": postag_model_path,
+                        "path": postag_model_zip,
                     },
                 ]
                 
                 import urllib.request
-                import zipfile
                 
                 for model in models_to_download:
                     if model["path"].exists():
@@ -236,13 +234,7 @@ def setup_mfa_linux():
                     for url in model["urls"]:
                         try:
                             logger.info(f"下载 {model['name']} 从 {url[:50]}...")
-                            zip_path = pkuseg_home / f"{model['name']}.zip"
-                            urllib.request.urlretrieve(url, zip_path)
-                            
-                            # 解压
-                            with zipfile.ZipFile(zip_path, 'r') as zf:
-                                zf.extractall(pkuseg_home)
-                            zip_path.unlink()
+                            urllib.request.urlretrieve(url, model["path"])
                             logger.info(f"{model['name']} 下载完成")
                             downloaded = True
                             break
@@ -252,19 +244,11 @@ def setup_mfa_linux():
                     if not downloaded:
                         logger.warning(f"{model['name']} 所有下载源均失败")
                 
-                # 验证模型是否可用（检查目录或文件是否存在）
-                spacy_ok = pkuseg_model_path.exists() or (pkuseg_home / "spacy_ontonotes.zip").exists()
-                postag_ok = postag_model_path.exists() or (pkuseg_home / "postag.zip").exists()
-                
-                # 列出实际下载的内容
-                if pkuseg_home.exists():
-                    contents = list(pkuseg_home.iterdir())
-                    logger.info(f"pkuseg 目录内容: {[c.name for c in contents]}")
-                
-                if spacy_ok and postag_ok:
+                # 验证模型是否可用
+                if pkuseg_model_zip.exists() and postag_model_zip.exists():
                     logger.info("pkuseg 模型下载完成")
                 else:
-                    logger.warning(f"pkuseg 模型下载不完整 (spacy_ontonotes: {spacy_ok}, postag: {postag_ok})")
+                    logger.warning(f"pkuseg 模型下载不完整，MFA 中文对齐可能不可用")
             else:
                 logger.info(f"pkuseg 模型已存在: {pkuseg_model_path}")
         
