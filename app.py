@@ -272,135 +272,120 @@ def download_all_models():
 
 
 def download_pkuseg_models() -> bool:
-    """下载 pkuseg 中文分词模型，返回是否成功"""
+    """下载 pkuseg 中文分词模型，返回是否成功
+    
+    使用 spacy 下载中文模型，会自动安装 pkuseg 需要的模型文件
+    """
     logger.info("\n【下载 pkuseg 模型】")
     
     pkuseg_home = Path(os.environ.get("PKUSEG_HOME", "/root/.pkuseg"))
     pkuseg_home.mkdir(parents=True, exist_ok=True)
     
+    # 查找 MFA 环境的 Python
+    mfa_env = Path("/tmp/micromamba/envs/mfa")
+    python_path = mfa_env / "bin" / "python"
+    
+    if not python_path.exists():
+        logger.error(f"MFA Python 不存在: {python_path}")
+        return False
+    
+    # 方法1: 使用 spacy 下载中文模型（官方推荐方式）
+    logger.info("使用 spacy 下载中文模型 (zh_core_web_sm)...")
+    
+    env = os.environ.copy()
+    env["PKUSEG_HOME"] = str(pkuseg_home)
+    
+    try:
+        # 先检查是否已安装
+        result = subprocess.run(
+            [str(python_path), "-c", "import spacy; spacy.load('zh_core_web_sm')"],
+            capture_output=True, text=True, timeout=30, env=env
+        )
+        
+        if result.returncode == 0:
+            logger.info("zh_core_web_sm 已安装")
+        else:
+            # 下载 spacy 中文模型
+            logger.info("下载 zh_core_web_sm...")
+            result = subprocess.run(
+                [str(python_path), "-m", "spacy", "download", "zh_core_web_sm"],
+                capture_output=True, text=True, timeout=300, env=env
+            )
+            
+            if result.returncode != 0:
+                logger.warning(f"spacy download 失败: {result.stderr[-500:] if result.stderr else result.stdout[-500:]}")
+                # 继续尝试其他方法
+            else:
+                logger.info("zh_core_web_sm 下载完成")
+        
+        # 触发 pkuseg 模型下载（通过实际加载一次）
+        logger.info("初始化 pkuseg 模型...")
+        init_script = f'''
+import os
+os.environ["PKUSEG_HOME"] = "{pkuseg_home}"
+
+# 方法1: 通过 spacy 加载触发
+try:
+    import spacy
+    nlp = spacy.load("zh_core_web_sm")
+    doc = nlp("测试")
+    print("spacy zh_core_web_sm 加载成功")
+except Exception as e:
+    print(f"spacy 加载失败: {{e}}")
+
+# 方法2: 直接初始化 pkuseg
+try:
+    import spacy_pkuseg
+    seg = spacy_pkuseg.pkuseg()
+    result = seg.cut("测试分词")
+    print(f"pkuseg 初始化成功: {{result}}")
+except Exception as e:
+    print(f"pkuseg 初始化失败: {{e}}")
+'''
+        
+        result = subprocess.run(
+            [str(python_path), "-c", init_script],
+            capture_output=True, text=True, timeout=120, env=env
+        )
+        
+        logger.info(f"初始化输出: {result.stdout}")
+        if result.stderr:
+            logger.info(f"初始化 stderr: {result.stderr[-500:]}")
+        
+    except subprocess.TimeoutExpired:
+        logger.warning("spacy 下载超时")
+    except Exception as e:
+        logger.warning(f"spacy 下载异常: {e}")
+    
+    # 检查 pkuseg 模型是否就绪
     pkuseg_model_dir = pkuseg_home / "spacy_ontonotes"
     postag_model_dir = pkuseg_home / "postag"
     
-    # 检查模型文件是否完整
-    model_complete = (
+    # 检查新格式 (msgpack) 或旧格式 (pkl/txt)
+    new_format_ok = (
+        (pkuseg_model_dir / "features.msgpack").exists() or
+        (pkuseg_model_dir / "weights.npz").exists()
+    )
+    old_format_ok = (
         (pkuseg_model_dir / "unigram_word.txt").exists() and
         (postag_model_dir / "features.pkl").exists()
     )
     
-    if model_complete:
-        logger.info(f"pkuseg 模型已存在: {pkuseg_home}")
+    if new_format_ok or old_format_ok:
+        logger.info(f"pkuseg 模型已就绪 (新格式: {new_format_ok}, 旧格式: {old_format_ok})")
+        # 列出目录内容
+        if pkuseg_model_dir.exists():
+            files = [f.name for f in pkuseg_model_dir.iterdir()][:10]
+            logger.info(f"spacy_ontonotes 内容: {files}")
         return True
     
-    logger.info(f"下载 pkuseg 中文分词模型到 {pkuseg_home}...")
+    # 列出 pkuseg_home 内容帮助调试
+    logger.warning("pkuseg 模型文件未找到")
+    if pkuseg_home.exists():
+        dirs = [d.name for d in pkuseg_home.iterdir()]
+        logger.info(f"pkuseg_home 目录内容: {dirs}")
     
-    # 使用原始 pkuseg-python 的旧版模型（包含 unigram_word.txt）
-    # spacy-pkuseg v0.0.26 的模型格式不兼容，需要用 lancopku/pkuseg-python v0.0.16 的模型
-    models = [
-        {
-            "name": "spacy_ontonotes",
-            # 使用 mixed 模型作为 spacy_ontonotes（通用分词模型）
-            "urls": [
-                "https://ghfast.top/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/mixed.zip",
-                "https://gh-proxy.com/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/mixed.zip",
-                "https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/mixed.zip",
-            ],
-            "zip_inner_name": "mixed",  # zip 内部的目录名
-            "check_file": "unigram_word.txt",
-        },
-        {
-            "name": "postag",
-            "urls": [
-                "https://ghfast.top/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
-                "https://gh-proxy.com/https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
-                "https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
-            ],
-            "zip_inner_name": "postag",
-            "check_file": "features.pkl",
-        },
-    ]
-    
-    import shutil
-    
-    for model in models:
-        model_name = model["name"]
-        model_dir = pkuseg_home / model_name
-        check_file = model_dir / model["check_file"]
-        zip_inner_name = model.get("zip_inner_name", model_name)
-        
-        if check_file.exists():
-            logger.info(f"{model_name} 已存在，跳过")
-            continue
-        
-        downloaded = False
-        for url in model["urls"]:
-            logger.info(f"下载 {model_name}: {url}")
-            zip_path = pkuseg_home / f"{model_name}.zip"
-            
-            try:
-                # 下载
-                result = subprocess.run(
-                    ["curl", "-fsSL", "-o", str(zip_path), url],
-                    capture_output=True, text=True, timeout=120
-                )
-                
-                if result.returncode != 0:
-                    logger.warning(f"curl 下载失败: {result.stderr}")
-                    continue
-                
-                if not zip_path.exists() or zip_path.stat().st_size < 1000:
-                    logger.warning(f"下载文件无效或太小")
-                    continue
-                
-                logger.info(f"下载完成，文件大小: {zip_path.stat().st_size} bytes")
-                
-                # 解压到 pkuseg_home
-                result = subprocess.run(
-                    ["unzip", "-o", "-q", str(zip_path), "-d", str(pkuseg_home)],
-                    capture_output=True, text=True, timeout=60
-                )
-                
-                if result.returncode != 0:
-                    logger.warning(f"unzip 解压失败: {result.stderr}")
-                    continue
-                
-                # 如果解压出来的目录名和目标名不同，重命名
-                extracted_dir = pkuseg_home / zip_inner_name
-                if extracted_dir.exists() and zip_inner_name != model_name:
-                    if model_dir.exists():
-                        shutil.rmtree(model_dir)
-                    extracted_dir.rename(model_dir)
-                    logger.info(f"重命名 {zip_inner_name} -> {model_name}")
-                
-                # 清理 zip 文件
-                zip_path.unlink(missing_ok=True)
-                
-                # 验证
-                if check_file.exists():
-                    logger.info(f"{model_name} 下载并解压成功")
-                    # 列出目录内容
-                    files = list(model_dir.iterdir())[:10]
-                    logger.info(f"{model_name} 目录内容: {[f.name for f in files]}")
-                    downloaded = True
-                    break
-                else:
-                    logger.warning(f"解压后文件不存在: {check_file}")
-                    # 列出 pkuseg_home 内容帮助调试
-                    dirs = [d.name for d in pkuseg_home.iterdir() if d.is_dir()]
-                    logger.info(f"pkuseg_home 目录: {dirs}")
-                    
-            except subprocess.TimeoutExpired:
-                logger.warning(f"下载超时: {url}")
-            except Exception as e:
-                logger.warning(f"下载异常: {e}")
-                import traceback
-                logger.warning(traceback.format_exc())
-        
-        if not downloaded:
-            logger.error(f"{model_name} 所有镜像下载失败")
-            return False
-    
-    logger.info("pkuseg 模型下载完成")
-    return True
+    return False
 
 
 def download_silero_vad_model() -> bool:
