@@ -146,13 +146,20 @@
 
 | 模块 | 文件 | 功能 |
 |------|------|------|
-| Silero VAD 下载 | `silero_vad_downloader.py` | 下载语音活动检测模型 |
+| Silero VAD 下载 | `silero_vad_downloader.py` | 下载语音活动检测模型（支持多镜像源） |
 | MFA 模型下载 | `mfa_model_downloader.py` | 下载声学模型和字典（带完整性校验） |
 | Whisper 模型 | 通过 HuggingFace 自动下载 | 语音识别模型 |
 
 支持的语言:
 - 中文 (普通话): `mandarin_mfa.zip` + `mandarin_china_mfa.dict`
 - 日文: `japanese_mfa.zip` + `japanese_mfa.dict`
+
+Silero VAD 下载镜像源（按优先级）:
+- ghproxy.com 镜像（国内加速）
+- mirror.ghproxy.com 镜像
+- jsdelivr CDN
+- fastgit 镜像
+- GitHub 原始地址（备选）
 
 MFA 字典文件完整性校验:
 - 下载完成后计算 SHA256 哈希并保存为 `.sha256` 文件
