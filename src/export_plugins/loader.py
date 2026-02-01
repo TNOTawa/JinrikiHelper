@@ -13,13 +13,14 @@ from typing import Dict, List, Type
 
 from .base import ExportPlugin
 from .simple_export import SimpleExportPlugin
+from .utau_oto_export import UTAUOtoExportPlugin
 
 logger = logging.getLogger(__name__)
 
 
 def get_builtin_plugins() -> List[Type[ExportPlugin]]:
     """获取内置插件列表"""
-    return [SimpleExportPlugin]
+    return [SimpleExportPlugin, UTAUOtoExportPlugin]
 
 
 def load_plugins(plugins_dir: str = None) -> Dict[str, ExportPlugin]:

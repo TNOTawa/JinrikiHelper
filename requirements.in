@@ -1,8 +1,8 @@
 # 直接依赖声明
 # 使用 pip-compile requirements.in 生成 requirements.txt
 
-# NumPy 版本约束：scipy 等库尚未完全兼容 NumPy 2.x
-numpy<2
+# NumPy 版本由其他依赖自动确定
+# librosa 0.11+ 支持 numpy 1.x 和 2.x
 
 textgrid
 audiofile
@@ -10,6 +10,7 @@ tqdm
 
 # GUI框架
 gradio==6.2.0
+customtkinter>=5.2.0  # 本地桌面 GUI (gui_old.py)
 
 # Whisper 语音识别
 transformers>=4.25.0
@@ -25,6 +26,9 @@ onnxruntime
 # 文本处理
 pypinyin
 pykakasi
+
+# 音频分析 (质量评分模块)
+librosa
 
 # MFA 强制对齐 (云端 Linux 环境使用)
 # Windows 本地使用 tools/mfa_engine 外挂模式

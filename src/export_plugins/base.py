@@ -24,6 +24,7 @@ class OptionType(Enum):
     FILE = "file"           # 文件选择
     FOLDER = "folder"       # 文件夹选择
     COMBO = "combo"         # 下拉选择框
+    MULTI_SELECT = "multi_select"  # 多选框
 
 
 @dataclass
@@ -34,10 +35,12 @@ class PluginOption:
     option_type: OptionType           # 选项类型
     default: Any = None               # 默认值
     description: str = ""             # 描述说明
-    choices: List[str] = field(default_factory=list)  # 下拉选项（仅COMBO类型）
+    choices: List[Any] = field(default_factory=list)  # 下拉/多选选项
     min_value: Optional[float] = None # 最小值（仅NUMBER类型）
     max_value: Optional[float] = None # 最大值（仅NUMBER类型）
+    step: Optional[float] = None      # 步进值（仅NUMBER类型）
     file_types: List[Tuple[str, str]] = field(default_factory=list)  # 文件类型过滤
+    visible_when: Optional[Dict[str, Any]] = None  # 条件显示规则
 
 
 class ExportPlugin(ABC):
@@ -142,3 +145,41 @@ class ExportPlugin(ABC):
             "slices_dir": os.path.join(source_dir, "slices"),
             "textgrid_dir": os.path.join(source_dir, "textgrid")
         }
+    
+    def get_quality_scorer(
+        self,
+        enabled_metrics: Optional[List[str]] = None,
+        weights: Optional[Dict[str, float]] = None
+    ):
+        """
+        获取质量评分器实例
+        
+        参数:
+            enabled_metrics: 启用的评分维度，如 ["duration", "rms", "f0"]
+            weights: 各维度权重
+        
+        返回:
+            QualityScorer 实例
+        """
+        from ..quality_scorer import QualityScorer
+        return QualityScorer(enabled_metrics=enabled_metrics, weights=weights)
+    
+    def score_audio_quality(
+        self,
+        wav_path: str,
+        enabled_metrics: Optional[List[str]] = None,
+        weights: Optional[Dict[str, float]] = None
+    ) -> Dict[str, float]:
+        """
+        评估音频文件质量
+        
+        参数:
+            wav_path: 音频文件路径
+            enabled_metrics: 启用的评分维度
+            weights: 各维度权重
+        
+        返回:
+            包含各维度分数和综合分数的字典
+        """
+        scorer = self.get_quality_scorer(enabled_metrics, weights)
+        return scorer.score_from_file(wav_path)

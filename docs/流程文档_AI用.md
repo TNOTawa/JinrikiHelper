@@ -131,6 +131,18 @@
 │ │    4. 按时长排序，保留最佳样本                                       │ │
 │ │    5. 按命名规则导出 (如: ba.wav, ba1.wav, ba2.wav)                  │ │
 │ └─────────────────────────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────────────────────────┐ │
+│ │ UTAU oto.ini 导出插件 (UTAUOtoExportPlugin)                          │ │
+│ │    1. 从 TextGrid phones 层提取音素时间边界                          │ │
+│ │    2. 识别辅音+元音对，计算 oto.ini 六参数                           │ │
+│ │       • Offset: 音频开始位置                                         │ │
+│ │       • Consonant: 不被拉伸的区域                                    │ │
+│ │       • Cutoff: 音频结束位置（负值从末尾算）                         │ │
+│ │       • Preutterance: 与节拍对齐位置                                 │ │
+│ │       • Overlap: 交叉淡化区域                                        │ │
+│ │    3. IPA 音素转换为拼音/罗马音别名                                  │ │
+│ │    4. 生成 oto.ini 配置文件                                          │ │
+│ └─────────────────────────────────────────────────────────────────────┘ │
 │                                                                         │
 │ 输出: export/[音源名称]/simple_export/                                  │
 │       ├── ba.wav                                                        │
@@ -192,13 +204,39 @@ MFA 支持两种运行模式:
 | 插件基类 | `export_plugins/base.py` | 定义插件接口和配置选项 |
 | 插件加载器 | `export_plugins/loader.py` | 扫描和加载插件 |
 | 简单导出 | `export_plugins/simple_export.py` | 按拼音分类导出单字音频 |
+| UTAU 导出 | `export_plugins/utau_oto_export.py` | 生成 UTAU 音源配置文件 (oto.ini) |
+| 质量评分 | `quality_scorer.py` | 音频质量多维度评估 |
 
 插件配置选项类型:
 - `TEXT`: 文本输入
 - `NUMBER`: 数字输入
 - `SWITCH`: 开关
 - `COMBO`: 下拉选择
+- `MULTI_SELECT`: 多选框
 - `FILE`/`FOLDER`: 文件/文件夹选择
+
+### 5. 音源质量评分模块
+
+`src/quality_scorer.py` 提供多维度音频质量评估:
+
+| 评估维度 | 函数 | 说明 | 耗时 |
+|---------|------|------|------|
+| 时长 | `duration_score()` | 适中时长得分高 (0.3~0.8s 最佳) | <1ms |
+| 音量稳定性 | `rms_variance_score()` | RMS 方差越小越好 | ~5ms |
+| 音高稳定性 | `f0_variance_score()` | F0 方差越小越好 | ~50-200ms |
+
+使用方式:
+```python
+from src.quality_scorer import QualityScorer
+
+scorer = QualityScorer(enabled_metrics=["duration", "f0"])
+scores = scorer.score_from_file("audio.wav")
+# 返回: {"duration": 0.85, "f0": 0.91, "combined": 0.88}
+```
+
+导出插件基类已集成质量评分接口:
+- `get_quality_scorer()`: 获取评分器实例
+- `score_audio_quality()`: 直接评估音频文件
 
 ### 5. MFA 跨平台支持
 

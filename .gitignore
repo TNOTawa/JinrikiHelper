@@ -26,6 +26,9 @@ mfa_temp/
 # 用户配置 (包含本地路径)
 config.json
 
+# 本地启动脚本 (包含本地路径)
+run_local*.bat
+
 # 用户数据目录 (保留目录结构)
 bank/*/
 export/*/
