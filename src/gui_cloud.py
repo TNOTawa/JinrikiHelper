@@ -27,6 +27,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def safe_gradio_handler(func):
+    """
+    Gradio 处理函数的安全包装器
+    
+    捕获所有异常并返回友好的错误信息，避免 Gradio 显示默认的"错误"状态
+    """
+    import functools
+    import traceback
+    
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # 记录完整的异常堆栈
+            error_trace = traceback.format_exc()
+            logger.error(f"处理函数 {func.__name__} 发生异常:\n{error_trace}")
+            
+            # 根据函数返回值数量返回错误信息
+            # 检查函数的类型注解来确定返回值数量
+            annotations = getattr(func, '__annotations__', {})
+            return_type = annotations.get('return', None)
+            
+            error_msg = f"❌ 系统错误: {str(e)}"
+            error_detail = f"异常类型: {type(e).__name__}\n详情: {str(e)}"
+            
+            # 根据函数名判断返回值数量
+            if func.__name__ == 'process_make_voicebank':
+                return error_msg, error_detail, None, None
+            elif func.__name__ == 'process_export_voicebank':
+                return error_msg, error_detail, None
+            elif func.__name__ == 'collect_and_export':
+                return error_msg, error_detail, None
+            else:
+                # 默认返回单个错误消息
+                return error_msg
+    
+    return wrapper
+
 # 项目根目录
 BASE_DIR = Path(__file__).parent.parent.absolute()
 
@@ -75,19 +115,23 @@ def cleanup_workspace(workspace: str):
 def create_zip(source_dir: str, zip_name: str) -> Optional[str]:
     """打包目录为 zip（使用 uuid 避免多用户冲突）"""
     if not os.path.isdir(source_dir):
+        logger.warning(f"打包失败: 目录不存在 {source_dir}")
         return None
     try:
         unique_id = str(uuid.uuid4())[:8]
         zip_path = os.path.join(CloudConfig.TEMP_BASE, f"{zip_name}_{unique_id}.zip")
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            file_count = 0
             for root, dirs, files in os.walk(source_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
                     arcname = os.path.relpath(file_path, source_dir)
                     zf.write(file_path, arcname)
+                    file_count += 1
+        logger.info(f"打包完成: {zip_path} ({file_count} 个文件)")
         return zip_path
     except Exception as e:
-        logger.error(f"打包失败: {e}")
+        logger.error(f"打包失败: {e}", exc_info=True)
         return None
 
 
@@ -147,6 +191,7 @@ def validate_audio_upload(files) -> Tuple[bool, str, List[str]]:
     return True, f"找到 {len(valid_files)} 个音频文件", valid_files
 
 
+@safe_gradio_handler
 def process_make_voicebank(
     audio_files,
     source_name: str,
@@ -159,12 +204,19 @@ def process_make_voicebank(
     
     返回: (状态, 日志, 下载文件路径, 会话存储的音源包路径)
     """
-    from src.pipeline import PipelineConfig, VoiceBankPipeline
-    
     logs = []
+    workspace = None
+    
     def log(msg):
         logs.append(msg)
         logger.info(msg)
+    
+    try:
+        # 导入依赖（放在 try 块内以捕获导入错误）
+        from src.pipeline import PipelineConfig, VoiceBankPipeline
+    except Exception as e:
+        logger.error(f"导入模块失败: {e}", exc_info=True)
+        return f"❌ 系统错误: 模块加载失败", str(e), None, None
     
     # 验证输入
     if not source_name or not source_name.strip():
@@ -191,10 +243,23 @@ def process_make_voicebank(
         
         # 复制音频文件到输入目录
         progress(0.05, desc="复制音频文件...")
+        copied_count = 0
         for src_path in file_paths:
-            dst_path = os.path.join(input_dir, os.path.basename(src_path))
-            shutil.copy2(src_path, dst_path)
-        log(f"📋 已复制 {len(file_paths)} 个文件到工作目录")
+            # 检查源文件是否存在
+            if not os.path.exists(src_path):
+                log(f"⚠️ 文件不存在或已被清理: {src_path}")
+                continue
+            try:
+                dst_path = os.path.join(input_dir, os.path.basename(src_path))
+                shutil.copy2(src_path, dst_path)
+                copied_count += 1
+            except Exception as e:
+                log(f"⚠️ 复制文件失败 {os.path.basename(src_path)}: {e}")
+        
+        if copied_count == 0:
+            return "❌ 无法访问上传的文件，请重新上传", "\n".join(logs), None, None
+        
+        log(f"📋 已复制 {copied_count}/{len(file_paths)} 个文件到工作目录")
         
         # 获取 MFA 模型路径
         mfa_models = scan_mfa_models()
@@ -374,6 +439,7 @@ def validate_voicebank_zip(zip_file) -> Tuple[bool, str, Optional[str]]:
     return validate_voicebank_zip_path(zip_path)
 
 
+@safe_gradio_handler
 def process_export_voicebank(
     zip_file,
     plugin_name: str,
@@ -736,6 +802,7 @@ def create_cloud_ui():
             with gr.Tab("🎵 制作音源"):
                 gr.Markdown("### 上传音频文件")
                 gr.Markdown("支持格式: WAV, MP3, FLAC, OGG, M4A")
+                gr.Markdown("允许同时拖拽多个文件上传，也可点击上传框的右上角追加文件")
                 
                 audio_upload = gr.File(
                     label="上传音频文件",
@@ -776,6 +843,8 @@ def create_cloud_ui():
                 
                 gr.Markdown("""
                 > ⏱️ **模型速度参考**：small 约 4 秒/句，medium 约 12 秒/句（medium 慢 2-3 倍但更准确）
+                > 
+                > <span style="color: red;">**small完全够用的，medium费时还容易炸空间，除非实在识别不出来字再用**</span>
                 """)
                 
                 make_btn = gr.Button("🚀 开始制作", variant="primary", size="lg", interactive=False)
