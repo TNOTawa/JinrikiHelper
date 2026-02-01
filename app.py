@@ -171,17 +171,25 @@ def setup_mfa_linux():
                 "-y"
             ], env=env, capture_output=True, text=True, timeout=300)
             
-            # 安装中文/日语分词依赖（MFA 对齐必需）
-            logger.info("安装中文/日语分词依赖...")
-            pip_path = mfa_env / "bin" / "pip"
-            subprocess.run([
-                str(pip_path), "install",
-                "spacy-pkuseg", "dragonmapper", "hanziconv",  # 中文
-                "sudachipy", "sudachidict_core"  # 日语
-            ], capture_output=True, text=True, timeout=300)
             logger.info("MFA 安装完成")
         
-        # 3. 确保 MFA 环境的 bin 目录在 PATH 中
+        # 3. 安装中文/日语分词依赖（无论新装还是已有环境都需要检查）
+        pip_path = mfa_env / "bin" / "pip"
+        if pip_path.exists():
+            # 检查是否已安装分词依赖
+            pkuseg_path = mfa_env / "lib" / "python3.11" / "site-packages" / "spacy_pkuseg"
+            if not pkuseg_path.exists():
+                logger.info("安装中文/日语分词依赖...")
+                subprocess.run([
+                    str(pip_path), "install",
+                    "spacy-pkuseg", "dragonmapper", "hanziconv",  # 中文
+                    "sudachipy", "sudachidict_core"  # 日语
+                ], capture_output=True, text=True, timeout=300)
+                logger.info("分词依赖安装完成")
+            else:
+                logger.info("分词依赖已存在")
+        
+        # 4. 确保 MFA 环境的 bin 目录在 PATH 中
         if mfa_bin_dir.exists() and str(mfa_bin_dir) not in os.environ.get("PATH", ""):
             os.environ["PATH"] = f"{mfa_bin_dir}:{os.environ.get('PATH', '')}"
             logger.info(f"已将 {mfa_bin_dir} 加入 PATH")
