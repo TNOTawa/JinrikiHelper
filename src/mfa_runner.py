@@ -99,6 +99,11 @@ def _build_mfa_env() -> dict:
             pkuseg_home = persistent_models / "pkuseg"
             pkuseg_home.mkdir(parents=True, exist_ok=True)
             env["PKUSEG_HOME"] = str(pkuseg_home)
+            logger.info(f"设置 PKUSEG_HOME: {pkuseg_home}")
+        
+        # 确保从系统环境继承 PKUSEG_HOME（如果已设置）
+        if "PKUSEG_HOME" not in env and os.environ.get("PKUSEG_HOME"):
+            env["PKUSEG_HOME"] = os.environ["PKUSEG_HOME"]
     
     return env
 

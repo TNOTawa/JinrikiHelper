@@ -70,6 +70,13 @@ def setup_environment():
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
         logger.info("已设置 HuggingFace 镜像: hf-mirror.com")
     
+    # 设置 pkuseg 模型目录（中文分词依赖，必须在 MFA 运行前设置）
+    if platform.system() != "Windows":
+        pkuseg_home = PERSISTENT_MODELS_DIR / "pkuseg" if PERSISTENT_MODELS_DIR.parent.exists() else Path("/root/.pkuseg")
+        pkuseg_home.mkdir(parents=True, exist_ok=True)
+        os.environ["PKUSEG_HOME"] = str(pkuseg_home)
+        logger.info(f"设置 PKUSEG_HOME: {pkuseg_home}")
+    
     # Linux 环境下始终尝试安装 MFA（无论是否云端）
     if platform.system() != "Windows":
         logger.info("Linux 环境，检查并安装 MFA...")
@@ -88,7 +95,7 @@ def setup_environment():
 
 
 def setup_mfa_linux():
-    """Linux 环境下安装 MFA（使用 micromamba）"""
+    """Linux 环境下安装 MFA（使用 micromamba），失败则退出程序"""
     import shutil
     
     def verify_mfa_working():
@@ -187,11 +194,14 @@ def setup_mfa_linux():
             pkuseg_path = mfa_env / "lib" / "python3.11" / "site-packages" / "spacy_pkuseg"
             if not pkuseg_path.exists():
                 logger.info("安装中文/日语分词依赖...")
-                subprocess.run([
+                result = subprocess.run([
                     str(pip_path), "install",
                     "spacy-pkuseg", "dragonmapper", "hanziconv",  # 中文
                     "sudachipy", "sudachidict_core"  # 日语
                 ], capture_output=True, text=True, timeout=300)
+                if result.returncode != 0:
+                    logger.error(f"分词依赖安装失败: {result.stderr}")
+                    sys.exit(1)
                 logger.info("分词依赖安装完成")
             else:
                 logger.info("分词依赖已存在")
@@ -200,17 +210,28 @@ def setup_mfa_linux():
             pkuseg_model_dir = pkuseg_home / "spacy_ontonotes"
             postag_model_dir = pkuseg_home / "postag"
             
-            if (not pkuseg_model_dir.exists() or not postag_model_dir.exists()) and python_path.exists():
+            # 检查模型文件是否完整（不仅检查目录存在，还要检查关键文件）
+            model_complete = (
+                (pkuseg_model_dir / "unigram_word.txt").exists() and
+                (postag_model_dir / "features.pkl").exists()
+            )
+            
+            if not model_complete and python_path.exists():
                 logger.info(f"预下载 pkuseg 中文分词模型到 {pkuseg_home}...")
                 
                 # 使用 MFA 环境中的 Python 调用 pkuseg 下载（自动处理解压）
                 # 替换 GitHub URL 为镜像
+                # 注意：必须在设置 PKUSEG_HOME 之后再 import spacy_pkuseg
                 download_script = f'''
 import os
 os.environ["PKUSEG_HOME"] = "{pkuseg_home}"
 
+# 必须在设置环境变量后再导入
 from spacy_pkuseg.config import config
 from spacy_pkuseg.download import download_model
+
+# 确认 pkuseg_home 已正确设置
+print(f"PKUSEG_HOME: {{config.pkuseg_home}}")
 
 # 替换为 GitHub 镜像
 config.model_urls["spacy_ontonotes"] = "https://ghfast.top/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip"
@@ -221,17 +242,21 @@ download_model(config.model_urls["spacy_ontonotes"], config.pkuseg_home, config.
 download_model(config.model_urls["postag"], config.pkuseg_home, config.model_hash["postag"])
 print("pkuseg models downloaded")
 '''
-                try:
-                    result = subprocess.run(
-                        [str(python_path), "-c", download_script],
-                        capture_output=True, text=True, timeout=120
-                    )
-                    if result.returncode == 0:
-                        logger.info("pkuseg 模型下载完成")
-                    else:
-                        logger.warning(f"pkuseg 下载失败: {result.stderr[-300:] if result.stderr else result.stdout[-300:]}")
-                except Exception as e:
-                    logger.warning(f"pkuseg 下载异常: {e}")
+                # 传递环境变量确保子进程也能获取
+                env = os.environ.copy()
+                env["PKUSEG_HOME"] = str(pkuseg_home)
+                
+                result = subprocess.run(
+                    [str(python_path), "-c", download_script],
+                    capture_output=True, text=True, timeout=180,
+                    env=env
+                )
+                if result.returncode == 0:
+                    logger.info("pkuseg 模型下载完成")
+                    logger.info(result.stdout[-500:] if result.stdout else "")
+                else:
+                    logger.error(f"pkuseg 下载失败: {result.stderr[-500:] if result.stderr else result.stdout[-500:]}")
+                    sys.exit(1)
             else:
                 logger.info(f"pkuseg 模型已存在: {pkuseg_home}")
         
@@ -244,18 +269,22 @@ print("pkuseg models downloaded")
             if verify_mfa_working():
                 logger.info("MFA 验证通过")
             else:
-                logger.warning("MFA 安装后验证失败")
+                logger.error("MFA 安装后验证失败")
+                sys.exit(1)
         
-    except subprocess.TimeoutExpired:
-        logger.error("MFA 安装超时")
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"MFA 安装超时: {e}")
+        sys.exit(1)
     except subprocess.CalledProcessError as e:
         logger.error(f"MFA 安装失败: {e.stderr[-500:] if e.stderr else e}")
+        sys.exit(1)
     except Exception as e:
         logger.error(f"MFA 安装异常: {e}")
+        sys.exit(1)
 
 
 def download_all_models():
-    """下载所有必需的模型"""
+    """下载所有必需的模型，任何模型下载失败则退出程序"""
     logger.info("=" * 50)
     logger.info("开始下载模型...")
     logger.info("=" * 50)
@@ -264,22 +293,58 @@ def download_all_models():
     os.makedirs(MODELS_DIR, exist_ok=True)
     os.makedirs(MFA_DIR, exist_ok=True)
     
+    errors = []
+    
     # 1. 下载 Silero VAD
-    download_silero_vad_model()
+    if not download_silero_vad_model():
+        errors.append("Silero VAD")
     
     # 2. 下载 Whisper 模型
-    download_whisper_models()
+    if not download_whisper_models():
+        errors.append("Whisper")
     
     # 3. 下载 MFA 模型（中文和日语）
-    download_mfa_models_all()
+    if not download_mfa_models_all():
+        errors.append("MFA")
+    
+    # 4. 验证 pkuseg 模型（中文分词必需）
+    if not verify_pkuseg_models():
+        errors.append("pkuseg")
+    
+    if errors:
+        logger.error("=" * 50)
+        logger.error(f"以下模型加载失败: {', '.join(errors)}")
+        logger.error("程序无法继续运行，退出")
+        logger.error("=" * 50)
+        sys.exit(1)
     
     logger.info("=" * 50)
     logger.info("所有模型下载完成")
     logger.info("=" * 50)
 
 
-def download_silero_vad_model():
-    """下载 Silero VAD 模型"""
+def verify_pkuseg_models() -> bool:
+    """验证 pkuseg 中文分词模型是否完整"""
+    logger.info("\n【验证 pkuseg 模型】")
+    
+    pkuseg_home = Path(os.environ.get("PKUSEG_HOME", "/root/.pkuseg"))
+    
+    required_files = [
+        pkuseg_home / "spacy_ontonotes" / "unigram_word.txt",
+        pkuseg_home / "postag" / "features.pkl",
+    ]
+    
+    for f in required_files:
+        if not f.exists():
+            logger.error(f"pkuseg 模型文件缺失: {f}")
+            return False
+    
+    logger.info("pkuseg 模型验证通过")
+    return True
+
+
+def download_silero_vad_model() -> bool:
+    """下载 Silero VAD 模型，返回是否成功"""
     logger.info("\n【下载 Silero VAD 模型】")
     
     try:
@@ -287,19 +352,22 @@ def download_silero_vad_model():
         
         if is_vad_model_downloaded(str(MODELS_DIR)):
             logger.info("Silero VAD 模型已存在，跳过下载")
-            return
+            return True
         
         success, result = download_silero_vad(str(MODELS_DIR), logger.info)
         if success:
             logger.info(f"Silero VAD 下载成功: {result}")
+            return True
         else:
-            logger.warning(f"Silero VAD 下载失败: {result}")
+            logger.error(f"Silero VAD 下载失败: {result}")
+            return False
     except Exception as e:
         logger.error(f"Silero VAD 下载异常: {e}")
+        return False
 
 
-def download_whisper_models():
-    """下载 Whisper 模型 (small 和 medium)"""
+def download_whisper_models() -> bool:
+    """下载 Whisper 模型 (small 和 medium)，返回是否成功"""
     logger.info("\n【下载 Whisper 模型】")
     
     try:
@@ -333,14 +401,17 @@ def download_whisper_models():
                 )
                 logger.info(f"{model_name} 下载完成")
             except Exception as e:
-                logger.warning(f"{model_name} 下载失败: {e}")
-                
+                logger.error(f"{model_name} 下载失败: {e}")
+                return False
+        
+        return True
     except Exception as e:
         logger.error(f"Whisper 模型下载异常: {e}")
+        return False
 
 
-def download_mfa_models_all():
-    """下载 MFA 中文和日语模型（带完整性校验）"""
+def download_mfa_models_all() -> bool:
+    """下载 MFA 中文和日语模型（带完整性校验），返回是否成功"""
     logger.info("\n【下载 MFA 模型】")
     
     try:
@@ -369,19 +440,18 @@ def download_mfa_models_all():
                         except Exception as e:
                             logger.error(f"删除损坏文件失败: {e}")
             
-            try:
-                success, acoustic_path, dict_path = download_language_models(
-                    lang, str(MFA_DIR), logger.info
-                )
-                if success:
-                    logger.info(f"{lang} 模型下载完成")
-                else:
-                    logger.warning(f"{lang} 模型下载失败")
-            except Exception as e:
-                logger.warning(f"{lang} 模型下载异常: {e}")
-                
+            success, acoustic_path, dict_path = download_language_models(
+                lang, str(MFA_DIR), logger.info
+            )
+            if not success:
+                logger.error(f"{lang} 模型下载失败")
+                return False
+            logger.info(f"{lang} 模型下载完成")
+        
+        return True
     except Exception as e:
         logger.error(f"MFA 模型下载异常: {e}")
+        return False
 
 
 def main():
