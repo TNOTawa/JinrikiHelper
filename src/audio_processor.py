@@ -91,6 +91,54 @@ class AudioProcessor:
         )
         self._log("Whisper 模型加载完成")
 
+    def _load_audio_ffmpeg(self, audio_path: str) -> tuple:
+        """
+        使用 ffmpeg 读取音频文件
+        
+        返回:
+            (audio, sr): 单声道 float32 numpy 数组和采样率
+        """
+        import subprocess
+        import numpy as np
+        import json
+        
+        # 使用 ffprobe 获取采样率
+        probe_cmd = [
+            'ffprobe', '-v', 'quiet', '-print_format', 'json',
+            '-show_streams', audio_path
+        ]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        
+        sr = 44100  # 默认采样率
+        if probe_result.returncode == 0:
+            try:
+                info = json.loads(probe_result.stdout)
+                for stream in info.get('streams', []):
+                    if stream.get('codec_type') == 'audio':
+                        sr = int(stream.get('sample_rate', 44100))
+                        break
+            except (json.JSONDecodeError, KeyError):
+                pass
+        
+        # 使用 ffmpeg 转换为单声道 PCM
+        cmd = [
+            'ffmpeg', '-i', audio_path,
+            '-f', 's16le',
+            '-acodec', 'pcm_s16le',
+            '-ac', '1',
+            '-ar', str(sr),
+            '-v', 'quiet',
+            '-'
+        ]
+        result = subprocess.run(cmd, capture_output=True)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg 读取音频失败: {audio_path}")
+        
+        audio = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        
+        return audio, sr
+
     def vad_split(
         self,
         audio_path: str,
@@ -114,6 +162,7 @@ class AudioProcessor:
         """
         import torch
         import torchaudio
+        import soundfile as sf
         
         self.load_vad_model()
         
@@ -122,13 +171,9 @@ class AudioProcessor:
         
         self._log(f"正在处理: {audio_path}")
         
-        # 读取音频
-        wav, sr = torchaudio.load(audio_path)
-        
-        # 转换为单声道
-        if wav.shape[0] > 1:
-            wav = wav.mean(dim=0, keepdim=True)
-        wav = wav.squeeze(0)
+        # 使用 ffmpeg 读取音频
+        wav, sr = self._load_audio_ffmpeg(audio_path)
+        wav = torch.from_numpy(wav).float()
         
         # 重采样到16kHz (VAD要求)
         if sr != 16000:
@@ -159,10 +204,10 @@ class AudioProcessor:
             start = int(ts['start'] * sr / sr_vad)
             end = int(ts['end'] * sr / sr_vad)
             
-            segment = wav[start:end]
+            segment = wav[start:end].numpy()
             
             output_path = os.path.join(output_dir, f"{basename}_{i:04d}.wav")
-            torchaudio.save(output_path, segment.unsqueeze(0), sr)
+            sf.write(output_path, segment, sr, subtype='PCM_16')
             output_files.append(output_path)
         
         self._log(f"切片完成，共 {len(output_files)} 个文件")

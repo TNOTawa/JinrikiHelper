@@ -336,12 +336,61 @@ class VoiceBankPipeline:
             ]
         return []
     
+    def _load_audio_ffmpeg(self, audio_path: str) -> tuple:
+        """
+        使用 ffmpeg 读取音频文件
+        
+        返回:
+            (audio, sr): 单声道 float32 numpy 数组和采样率
+        """
+        import subprocess
+        import numpy as np
+        
+        # 使用 ffprobe 获取采样率
+        probe_cmd = [
+            'ffprobe', '-v', 'quiet', '-print_format', 'json',
+            '-show_streams', audio_path
+        ]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        
+        sr = 44100  # 默认采样率
+        if probe_result.returncode == 0:
+            import json
+            try:
+                info = json.loads(probe_result.stdout)
+                for stream in info.get('streams', []):
+                    if stream.get('codec_type') == 'audio':
+                        sr = int(stream.get('sample_rate', 44100))
+                        break
+            except (json.JSONDecodeError, KeyError):
+                pass
+        
+        # 使用 ffmpeg 转换为单声道 PCM
+        cmd = [
+            'ffmpeg', '-i', audio_path,
+            '-f', 's16le',  # 16-bit signed little-endian
+            '-acodec', 'pcm_s16le',
+            '-ac', '1',  # 单声道
+            '-ar', str(sr),  # 保持原采样率
+            '-v', 'quiet',
+            '-'
+        ]
+        result = subprocess.run(cmd, capture_output=True)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg 读取音频失败: {audio_path}")
+        
+        # 转换为 numpy 数组
+        audio = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        
+        return audio, sr
+    
     def _vad_split(self, audio_path: str, output_dir: str, prefix: str) -> List[str]:
         """
         VAD切片
         
         输出格式统一为: 16bit 44.1kHz 单声道 WAV
-        支持格式: wav, mp3, flac, ogg, m4a 等 (通过 torchaudio/ffmpeg)
+        支持格式: wav, mp3, flac, ogg, m4a 等 (通过 ffmpeg)
         """
         import torch
         import torchaudio
@@ -351,16 +400,9 @@ class VoiceBankPipeline:
         # 标准输出格式
         TARGET_SR = 44100
         
-        # 使用 torchaudio 读取音频（支持更多格式，包括 m4a）
-        audio_tensor, sr = torchaudio.load(audio_path)
-        
-        # 转换为单声道
-        if audio_tensor.shape[0] > 1:
-            audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
-        audio_tensor = audio_tensor.squeeze(0)  # [samples]
-        
-        # 转为 numpy
-        audio = audio_tensor.numpy()
+        # 使用 ffmpeg 读取音频（支持更多格式，包括 m4a）
+        # 返回的 audio 已经是单声道 float32 numpy 数组
+        audio, sr = self._load_audio_ffmpeg(audio_path)
         
         # 重采样到 44.1kHz（标准格式）
         if sr != TARGET_SR:
