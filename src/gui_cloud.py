@@ -194,6 +194,46 @@ def check_mfa_available() -> bool:
 
 # ==================== 制作音源功能 ====================
 
+def get_audio_duration(file_path: str) -> Optional[float]:
+    """
+    获取音频文件时长（秒）
+    
+    返回: 时长秒数，失败返回 None
+    """
+    try:
+        import wave
+        import contextlib
+        
+        # 对于 WAV 文件，使用 wave 模块快速获取时长
+        if file_path.lower().endswith('.wav'):
+            with contextlib.closing(wave.open(file_path, 'r')) as f:
+                frames = f.getnframes()
+                rate = f.getframerate()
+                return frames / float(rate)
+        
+        # 对于其他格式，使用 pydub（如果可用）
+        try:
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(file_path)
+            return len(audio) / 1000.0  # 毫秒转秒
+        except ImportError:
+            # pydub 不可用，尝试使用 librosa
+            try:
+                import librosa
+                duration = librosa.get_duration(path=file_path)
+                return duration
+            except ImportError:
+                logger.warning(f"无法获取音频时长，缺少 pydub 或 librosa: {file_path}")
+                return None
+    except Exception as e:
+        logger.warning(f"获取音频时长失败 {file_path}: {e}")
+        return None
+
+
+# 云端音频时长限制（秒）
+MAX_AUDIO_DURATION_SECONDS = 600  # 10分钟
+
+
 def validate_audio_upload(files) -> Tuple[bool, str, List[str]]:
     """
     验证上传的音频文件
@@ -217,6 +257,44 @@ def validate_audio_upload(files) -> Tuple[bool, str, List[str]]:
         return False, f"未找到有效音频文件，支持格式: {', '.join(CloudConfig.AUDIO_EXTENSIONS)}", []
     
     return True, f"找到 {len(valid_files)} 个音频文件", valid_files
+
+
+def validate_audio_duration(file_paths: List[str]) -> Tuple[bool, str, List[str]]:
+    """
+    验证音频文件时长，过滤超时文件
+    
+    返回: (是否全部通过, 消息, 有效文件列表)
+    """
+    valid_files = []
+    rejected_files = []
+    max_minutes = MAX_AUDIO_DURATION_SECONDS / 60
+    
+    for path in file_paths:
+        duration = get_audio_duration(path)
+        filename = os.path.basename(path)
+        
+        if duration is None:
+            # 无法获取时长，允许通过（后续处理可能会失败）
+            valid_files.append(path)
+            logger.warning(f"无法检测时长，允许通过: {filename}")
+        elif duration > MAX_AUDIO_DURATION_SECONDS:
+            duration_min = duration / 60
+            rejected_files.append(f"{filename} ({duration_min:.1f}分钟)")
+        else:
+            valid_files.append(path)
+    
+    if rejected_files:
+        if not valid_files:
+            # 全部被拒绝
+            return False, f"所有音频超过{max_minutes:.0f}分钟限制: {', '.join(rejected_files)}", []
+        else:
+            # 部分被拒绝
+            msg = f"已过滤 {len(rejected_files)} 个超时音频（>{max_minutes:.0f}分钟）: {', '.join(rejected_files[:3])}"
+            if len(rejected_files) > 3:
+                msg += f" 等{len(rejected_files)}个"
+            return True, msg, valid_files
+    
+    return True, "", valid_files
 
 
 @safe_gradio_handler
@@ -263,6 +341,15 @@ def process_make_voicebank(
         return f"❌ {msg}", "", None, None
     
     log(f"📁 {msg}")
+    
+    # 检查音频时长限制
+    valid, duration_msg, file_paths = validate_audio_duration(file_paths)
+    if not valid:
+        decrement_concurrency()
+        return f"❌ {duration_msg}", "", None, None
+    
+    if duration_msg:
+        log(f"⚠️ {duration_msg}")
     
     # 创建临时工作空间
     workspace = create_temp_workspace()
@@ -853,6 +940,17 @@ def create_cloud_ui():
         with gr.Tabs():
             # ==================== 制作音源页 ====================
             with gr.Tab("🎵 制作音源"):
+                gr.Markdown("""
+                <div style="background: linear-gradient(135deg, #fff3cd 0%, #ffeeba 100%); border-left: 4px solid #ffc107; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;">
+                    <p style="margin: 0 0 8px 0; font-weight: bold; color: #856404;">⚠️ 温馨提示</p>
+                    <p style="margin: 0; color: #856404; line-height: 1.6;">
+                        请控制上传音频的数量！经测试，<strong>8 分钟以内的高质量音频已经非常充足</strong>。<br/>
+                        上传过多音频可能导致混入低质量样本，同时也会占用服务器并发资源。<br/>
+                        建议大量音频先人工筛选后再上传，感谢配合！🙏
+                    </p>
+                </div>
+                """)
+                
                 gr.Markdown("### 上传音频文件")
                 gr.Markdown("支持格式: WAV, MP3, FLAC, OGG, M4A")
                 gr.Markdown("允许同时拖拽多个文件上传，也可点击上传框的右上角追加文件")
@@ -923,15 +1021,31 @@ def create_cloud_ui():
                         return "⏳ 请上传音频文件", gr.update(interactive=False)
                     
                     valid_count = 0
+                    total_duration = 0.0
                     for f in files:
                         path = f.name if hasattr(f, 'name') else str(f)
                         if path.lower().endswith(CloudConfig.AUDIO_EXTENSIONS):
                             valid_count += 1
+                            # 计算时长
+                            duration = get_audio_duration(path)
+                            if duration:
+                                total_duration += duration
                     
                     if valid_count == 0:
                         return f"❌ 未找到有效音频，支持: {', '.join(CloudConfig.AUDIO_EXTENSIONS)}", gr.update(interactive=False)
                     
-                    return f"✅ 已上传 {valid_count} 个音频文件，可以开始制作", gr.update(interactive=True)
+                    # 格式化总时长
+                    total_minutes = int(total_duration // 60)
+                    total_seconds = int(total_duration % 60)
+                    duration_str = f"{total_minutes}分{total_seconds}秒" if total_minutes > 0 else f"{total_seconds}秒"
+                    
+                    # 根据时长给出不同提示
+                    if total_duration > MAX_AUDIO_DURATION_SECONDS:
+                        return f"⚠️ 已上传 {valid_count} 个音频，总时长 {duration_str}（超过10分钟，部分文件将被过滤）", gr.update(interactive=True)
+                    elif total_duration > 480:  # 8分钟
+                        return f"⚠️ 已上传 {valid_count} 个音频，总时长 {duration_str}（建议控制在8分钟内）", gr.update(interactive=True)
+                    else:
+                        return f"✅ 已上传 {valid_count} 个音频，总时长 {duration_str}", gr.update(interactive=True)
                 
                 audio_upload.change(
                     fn=check_audio_upload,
