@@ -1236,6 +1236,7 @@ def create_cloud_ui():
                 <div style="background: linear-gradient(135deg, #fff3cd 0%, #ffeeba 100%); border-left: 4px solid #ffc107; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;">
                     <p style="margin: 0 0 8px 0; font-weight: bold; color: #856404;">⚠️ 温馨提示</p>
                     <p style="margin: 0; color: #856404; line-height: 1.6;">
+                        <strong style="font-size: 1.1em;">音频质量 >> 音频数量！</strong><br/>
                         请控制上传音频的数量！经测试，<strong>8 分钟以内的高质量音频已经非常充足</strong>。<br/>
                         上传过多音频可能导致混入低质量样本，同时也会占用服务器并发资源。<br/>
                         建议大量音频先人工筛选后再上传，感谢配合！🙏
