@@ -1000,6 +1000,12 @@ def create_cloud_ui():
                 
                 make_btn = gr.Button("🚀 开始制作", variant="primary", size="lg", interactive=False)
                 
+                # 时长估算显示
+                time_estimate = gr.Markdown(
+                    value="",
+                    visible=False
+                )
+                
                 make_status = gr.Textbox(label="状态", interactive=False)
                 make_log = gr.Textbox(label="处理日志", lines=12, interactive=False)
                 
@@ -1016,9 +1022,9 @@ def create_cloud_ui():
                 
                 # 音频上传状态检测
                 def check_audio_upload(files):
-                    """检查音频上传状态，返回状态文本和按钮可用性"""
+                    """检查音频上传状态，返回状态文本、按钮可用性和时长估算"""
                     if not files:
-                        return "⏳ 请上传音频文件", gr.update(interactive=False)
+                        return "⏳ 请上传音频文件", gr.update(interactive=False), gr.update(value="", visible=False)
                     
                     valid_count = 0
                     total_duration = 0.0
@@ -1032,25 +1038,44 @@ def create_cloud_ui():
                                 total_duration += duration
                     
                     if valid_count == 0:
-                        return f"❌ 未找到有效音频，支持: {', '.join(CloudConfig.AUDIO_EXTENSIONS)}", gr.update(interactive=False)
+                        return f"❌ 未找到有效音频，支持: {', '.join(CloudConfig.AUDIO_EXTENSIONS)}", gr.update(interactive=False), gr.update(value="", visible=False)
                     
                     # 格式化总时长
                     total_minutes = int(total_duration // 60)
                     total_seconds = int(total_duration % 60)
                     duration_str = f"{total_minutes}分{total_seconds}秒" if total_minutes > 0 else f"{total_seconds}秒"
                     
+                    # 计算预估处理时间
+                    # 根据实测数据：1分钟音频约产生79个切片，每个切片处理约3.9秒
+                    # 即每分钟音频需要约 79 * 3.9 / 60 ≈ 5.1 分钟处理时间
+                    PROCESS_TIME_RATIO = 5.1  # 处理时间与音频时长的比例
+                    estimated_seconds = total_duration * PROCESS_TIME_RATIO
+                    est_minutes = int(estimated_seconds // 60)
+                    est_seconds = int(estimated_seconds % 60)
+                    
+                    if est_minutes >= 60:
+                        est_hours = est_minutes // 60
+                        est_minutes = est_minutes % 60
+                        estimate_str = f"{est_hours}小时{est_minutes}分钟"
+                    elif est_minutes > 0:
+                        estimate_str = f"{est_minutes}分{est_seconds}秒"
+                    else:
+                        estimate_str = f"{est_seconds}秒"
+                    
+                    estimate_md = f"> ⏱️ **预估处理时间**：约 {estimate_str}（基于 small 模型，medium 约为 2-3 倍）"
+                    
                     # 根据时长给出不同提示
                     if total_duration > MAX_AUDIO_DURATION_SECONDS:
-                        return f"⚠️ 已上传 {valid_count} 个音频，总时长 {duration_str}（超过10分钟，部分文件将被过滤）", gr.update(interactive=True)
+                        return f"⚠️ 已上传 {valid_count} 个音频，总时长 {duration_str}（超过10分钟，部分文件将被过滤）", gr.update(interactive=True), gr.update(value=estimate_md, visible=True)
                     elif total_duration > 480:  # 8分钟
-                        return f"⚠️ 已上传 {valid_count} 个音频，总时长 {duration_str}（建议控制在8分钟内）", gr.update(interactive=True)
+                        return f"⚠️ 已上传 {valid_count} 个音频，总时长 {duration_str}（建议控制在8分钟内）", gr.update(interactive=True), gr.update(value=estimate_md, visible=True)
                     else:
-                        return f"✅ 已上传 {valid_count} 个音频，总时长 {duration_str}", gr.update(interactive=True)
+                        return f"✅ 已上传 {valid_count} 个音频，总时长 {duration_str}", gr.update(interactive=True), gr.update(value=estimate_md, visible=True)
                 
                 audio_upload.change(
                     fn=check_audio_upload,
                     inputs=[audio_upload],
-                    outputs=[upload_status, make_btn]
+                    outputs=[upload_status, make_btn, time_estimate]
                 )
                 
                 make_btn.click(
