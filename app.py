@@ -49,6 +49,42 @@ MODELS_DIR = None  # 延迟初始化
 MFA_DIR = None
 
 
+def ensure_ffmpeg():
+    """确保 ffmpeg 已安装（用于音频格式转换，支持 m4a 等格式）"""
+    import shutil
+    
+    if shutil.which("ffmpeg"):
+        logger.info("ffmpeg 已安装")
+        return True
+    
+    logger.info("ffmpeg 未安装，尝试安装...")
+    
+    try:
+        # 尝试使用 apt-get 安装（Debian/Ubuntu）
+        result = subprocess.run(
+            ["apt-get", "update"],
+            capture_output=True, text=True, timeout=60
+        )
+        result = subprocess.run(
+            ["apt-get", "install", "-y", "ffmpeg"],
+            capture_output=True, text=True, timeout=120
+        )
+        
+        if shutil.which("ffmpeg"):
+            logger.info("ffmpeg 安装成功")
+            return True
+        else:
+            logger.warning("ffmpeg 安装后仍未找到")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        logger.warning("ffmpeg 安装超时")
+        return False
+    except Exception as e:
+        logger.warning(f"ffmpeg 安装失败: {e}")
+        return False
+
+
 def setup_environment():
     """初始化云端环境"""
     global MODELS_DIR, MFA_DIR
@@ -64,6 +100,10 @@ def setup_environment():
         os.environ.get("GRADIO_SERVER_NAME"), # 通用 Gradio 云端
         Path("/home/studio_service").exists(), # 魔搭创空间特征目录
     ])
+    
+    # 确保 ffmpeg 已安装（支持 m4a 等音频格式）
+    if is_cloud or platform.system() != "Windows":
+        ensure_ffmpeg()
     
     # 魔搭创空间无法访问 HuggingFace，使用镜像
     if is_cloud and Path("/home/studio_service").exists():
@@ -538,6 +578,10 @@ def main():
     app = create_cloud_ui()
     
     # 云端配置
+    # 启用队列并设置并发数，允许多用户同时处理
+    app.queue(
+        default_concurrency_limit=25,  # 同时处理的请求数
+    )
     app.launch(
         server_name="0.0.0.0",
         server_port=7860,

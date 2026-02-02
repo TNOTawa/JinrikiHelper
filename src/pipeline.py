@@ -341,30 +341,33 @@ class VoiceBankPipeline:
         VAD切片
         
         输出格式统一为: 16bit 44.1kHz 单声道 WAV
+        支持格式: wav, mp3, flac, ogg, m4a 等 (通过 torchaudio/ffmpeg)
         """
         import torch
+        import torchaudio
         import soundfile as sf
         import numpy as np
         
         # 标准输出格式
         TARGET_SR = 44100
         
-        # 读取并转换为标准格式
-        audio, sr = sf.read(audio_path, dtype='float32')
+        # 使用 torchaudio 读取音频（支持更多格式，包括 m4a）
+        audio_tensor, sr = torchaudio.load(audio_path)
         
         # 转换为单声道
-        if len(audio.shape) > 1:
-            audio = np.mean(audio, axis=1)
+        if audio_tensor.shape[0] > 1:
+            audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
+        audio_tensor = audio_tensor.squeeze(0)  # [samples]
+        
+        # 转为 numpy
+        audio = audio_tensor.numpy()
         
         # 重采样到 44.1kHz（标准格式）
         if sr != TARGET_SR:
-            import torchaudio
-            audio_tensor = torch.from_numpy(audio).float()
             resampler = torchaudio.transforms.Resample(sr, TARGET_SR)
-            audio = resampler(audio_tensor).numpy()
+            audio = resampler(torch.from_numpy(audio).float()).numpy()
         
         # VAD 需要 16kHz，单独重采样用于检测
-        import torchaudio
         audio_tensor = torch.from_numpy(audio).float()
         resampler_16k = torchaudio.transforms.Resample(TARGET_SR, 16000)
         wav_16k = resampler_16k(audio_tensor)

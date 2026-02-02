@@ -16,6 +16,7 @@ import tempfile
 import zipfile
 import shutil
 import uuid
+import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Any
 
@@ -26,6 +27,33 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+
+# ==================== 并发计数器 ====================
+MAX_CONCURRENCY = 25
+_concurrency_lock = threading.Lock()
+_current_concurrency = 0
+
+
+def increment_concurrency():
+    """增加并发计数"""
+    global _current_concurrency
+    with _concurrency_lock:
+        _current_concurrency += 1
+        return _current_concurrency
+
+
+def decrement_concurrency():
+    """减少并发计数"""
+    global _current_concurrency
+    with _concurrency_lock:
+        _current_concurrency = max(0, _current_concurrency - 1)
+        return _current_concurrency
+
+
+def get_concurrency_status() -> str:
+    """获取当前并发状态文本"""
+    with _concurrency_lock:
+        return f"当前并发数：{_current_concurrency}/{MAX_CONCURRENCY}"
 
 
 def safe_gradio_handler(func):
@@ -204,6 +232,9 @@ def process_make_voicebank(
     
     返回: (状态, 日志, 下载文件路径, 会话存储的音源包路径)
     """
+    # 增加并发计数
+    increment_concurrency()
+    
     logs = []
     workspace = None
     
@@ -216,16 +247,19 @@ def process_make_voicebank(
         from src.pipeline import PipelineConfig, VoiceBankPipeline
     except Exception as e:
         logger.error(f"导入模块失败: {e}", exc_info=True)
+        decrement_concurrency()
         return f"❌ 系统错误: 模块加载失败", str(e), None, None
     
     # 验证输入
     if not source_name or not source_name.strip():
+        decrement_concurrency()
         return "❌ 请输入音源名称", "", None, None
     
     source_name = source_name.strip()
     
     valid, msg, file_paths = validate_audio_upload(audio_files)
     if not valid:
+        decrement_concurrency()
         return f"❌ {msg}", "", None, None
     
     log(f"📁 {msg}")
@@ -342,12 +376,15 @@ def process_make_voicebank(
             log(f"📦 已打包: {os.path.basename(zip_path)}")
             progress(1.0, desc="完成")
             # 返回路径到会话状态，供导出页面使用
+            decrement_concurrency()
             return "✅ 音源制作完成", "\n".join(logs), zip_path, zip_path
         else:
+            decrement_concurrency()
             return "❌ 打包失败", "\n".join(logs), None, None
         
     except Exception as e:
         logger.error(f"制作音源失败: {e}", exc_info=True)
+        decrement_concurrency()
         return f"❌ 处理失败: {e}", "\n".join(logs), None, None
     
     finally:
@@ -456,6 +493,9 @@ def process_export_voicebank(
     
     返回: (状态, 日志, 下载文件路径)
     """
+    # 增加并发计数
+    increment_concurrency()
+    
     logs = []
     def log(msg):
         logs.append(msg)
@@ -464,6 +504,7 @@ def process_export_voicebank(
     # 验证输入
     valid, msg, source_name = validate_voicebank_zip(zip_file)
     if not valid:
+        decrement_concurrency()
         return f"❌ {msg}", "", None
     
     log(f"📦 {msg}")
@@ -576,12 +617,15 @@ def process_export_voicebank(
             file_count = len([f for f in os.listdir(export_dir) if f.endswith(('.wav', '.ini'))])
             log(f"📦 已打包: {file_count} 个文件")
             progress(1.0, desc="完成")
+            decrement_concurrency()
             return "✅ 导出完成", "\n".join(logs), result_zip
         else:
+            decrement_concurrency()
             return "❌ 打包失败", "\n".join(logs), None
         
     except Exception as e:
         logger.error(f"导出失败: {e}", exc_info=True)
+        decrement_concurrency()
         return f"❌ 处理失败: {e}", "\n".join(logs), None
     
     finally:
@@ -793,7 +837,16 @@ def create_cloud_ui():
         # 会话状态：存储当前用户制作的音源包路径
         session_voicebank = gr.State(value=None)
         
-        gr.Markdown("# 🎤 人力V助手 (JinrikiHelper)")
+        # 标题行：左侧标题 + 右侧并发状态
+        with gr.Row():
+            with gr.Column(scale=4):
+                gr.Markdown("# 🎤 人力V助手 (JinrikiHelper)")
+            with gr.Column(scale=1, min_width=200):
+                concurrency_display = gr.Markdown(
+                    value=get_concurrency_status(),
+                    elem_id="concurrency-status"
+                )
+        
         gr.Markdown("语音数据集处理工具 - 自动化制作语音音源库")
         gr.Markdown("> ☁️ 云端版：上传音频 → 自动处理 → 下载结果")
         
@@ -1127,6 +1180,13 @@ def create_cloud_ui():
                 
                 本工具集成 Montreal Forced Aligner (MIT License)
                 """)
+        
+        # 定时刷新并发状态（每3秒）
+        app.load(
+            fn=get_concurrency_status,
+            outputs=[concurrency_display],
+            every=3
+        )
     
     return app
 
@@ -1134,6 +1194,10 @@ def create_cloud_ui():
 def main():
     """云端入口"""
     app = create_cloud_ui()
+    # 启用队列并设置并发数，允许多用户同时处理
+    app.queue(
+        default_concurrency_limit=MAX_CONCURRENCY,  # 同时处理的请求数
+    )
     app.launch(
         server_name="0.0.0.0",
         server_port=7860,

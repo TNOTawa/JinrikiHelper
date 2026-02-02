@@ -182,7 +182,7 @@ def run_mfa_alignment(
         output_dir: TextGrid 输出目录
         dict_path: 字典文件路径，默认使用 models/mandarin.dict
         model_path: 声学模型路径，默认使用 models/mandarin.zip
-        temp_dir: 临时目录，默认使用 mfa_temp
+        temp_dir: 临时目录，默认使用 mfa_temp（云端会自动创建独立目录）
         single_speaker: 是否为单说话人模式
         clean: 是否清理旧缓存
         progress_callback: 进度回调函数
@@ -190,6 +190,8 @@ def run_mfa_alignment(
     返回:
         (成功标志, 输出信息或错误信息)
     """
+    import uuid
+    
     def log(msg: str):
         logger.info(msg)
         if progress_callback:
@@ -203,7 +205,11 @@ def run_mfa_alignment(
     # 设置默认路径
     dict_path = dict_path or str(DEFAULT_DICT_PATH)
     model_path = model_path or str(DEFAULT_MODEL_PATH)
-    temp_dir = temp_dir or str(DEFAULT_TEMP_DIR)
+    
+    # 临时目录：如果未指定，创建独立目录避免多用户冲突
+    if temp_dir is None:
+        session_id = uuid.uuid4().hex[:8]
+        temp_dir = str(DEFAULT_TEMP_DIR / f"session_{session_id}")
     
     # 验证路径
     if not os.path.isdir(corpus_dir):
@@ -261,6 +267,13 @@ def run_mfa_alignment(
         
         if result.returncode == 0:
             log("MFA 对齐完成!")
+            # 清理临时目录（仅清理会话独立目录）
+            if "session_" in temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                    log(f"已清理临时目录: {temp_dir}")
+                except Exception as e:
+                    logger.warning(f"清理临时目录失败: {e}")
             return True, result.stdout
         else:
             error_msg = result.stderr or result.stdout or "未知错误"
@@ -275,6 +288,13 @@ def run_mfa_alignment(
         msg = f"MFA 执行异常: {e}"
         log(msg)
         return False, msg
+    finally:
+        # 确保临时目录被清理（即使出错）
+        if "session_" in temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
 
 
 def run_mfa_validate(
