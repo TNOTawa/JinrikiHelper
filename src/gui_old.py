@@ -94,80 +94,99 @@ class ModelDownloadFrame(ctk.CTkFrame):
         self._setup_ui()
 
     def _setup_ui(self):
+        row = 0
+        
+        # 便携版提示
+        ctk.CTkLabel(
+            self, text="💡 便携版已附带除 whisper-medium 以外的所有模型",
+            font=ctk.CTkFont(size=12), text_color="#4a9a6a"
+        ).grid(row=row, column=0, columnspan=3, padx=10, pady=(10, 15), sticky="w")
+        row += 1
+        
         # Whisper 模型区域
         ctk.CTkLabel(self, text="Whisper 语音识别模型", font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=0, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w"
+            row=row, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w"
         )
+        row += 1
         
-        ctk.CTkLabel(self, text="模型版本:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(self, text="模型版本:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.whisper_model_var = ctk.StringVar(value=self.config.get("whisper_model"))
         ctk.CTkComboBox(
             self, values=list(ConfigManager.WHISPER_MODELS.keys()),
             variable=self.whisper_model_var, width=200,
             command=self._on_model_change
-        ).grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        ).grid(row=row, column=1, padx=5, pady=5, sticky="w")
         
         self.model_desc_label = ctk.CTkLabel(self, text=self._get_model_desc(), text_color="gray")
-        self.model_desc_label.grid(row=1, column=2, padx=10, pady=5, sticky="w")
+        self.model_desc_label.grid(row=row, column=2, padx=10, pady=5, sticky="w")
+        row += 1
         
-        ctk.CTkLabel(self, text="模型目录:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(self, text="模型目录:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.models_dir_var = ctk.StringVar(value=self.config.get("models_dir"))
-        ctk.CTkEntry(self, textvariable=self.models_dir_var, width=320).grid(row=2, column=1, padx=5, pady=5, sticky="w")
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_models_dir).grid(row=2, column=2, padx=5, pady=5, sticky="w")
+        ctk.CTkEntry(self, textvariable=self.models_dir_var, width=320).grid(row=row, column=1, padx=5, pady=5, sticky="w")
+        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_models_dir).grid(row=row, column=2, padx=5, pady=5, sticky="w")
+        row += 1
         
-        ctk.CTkLabel(self, text="状态:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
-        self.whisper_status = ctk.CTkLabel(self, text="⏳ 未加载", text_color="gray")
-        self.whisper_status.grid(row=3, column=1, padx=5, pady=5, sticky="w")
+        # Whisper 状态（初始隐藏）
+        self.whisper_status = ctk.CTkLabel(self, text="", text_color="gray")
+        self.whisper_status.grid(row=row, column=1, padx=5, pady=5, sticky="w")
         self.whisper_btn = ctk.CTkButton(self, text="下载 / 加载模型", command=self._download_whisper, width=140)
-        self.whisper_btn.grid(row=3, column=2, padx=5, pady=5, sticky="w")
+        self.whisper_btn.grid(row=row, column=2, padx=5, pady=5, sticky="w")
+        row += 1
         
         self.progress_label = ctk.CTkLabel(self, text="", text_color="gray")
-        self.progress_label.grid(row=4, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+        self.progress_label.grid(row=row, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+        row += 1
         
         # Silero VAD 区域
         ctk.CTkLabel(self, text="Silero VAD 模型", font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=5, column=0, columnspan=3, padx=10, pady=(20, 5), sticky="w"
+            row=row, column=0, columnspan=3, padx=10, pady=(20, 5), sticky="w"
         )
+        row += 1
         ctk.CTkLabel(self, text="用于语音活动检测和音频切片", text_color="gray").grid(
-            row=6, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w"
+            row=row, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w"
         )
+        row += 1
         
-        ctk.CTkLabel(self, text="状态:").grid(row=7, column=0, padx=10, pady=5, sticky="w")
-        self.vad_status = ctk.CTkLabel(self, text="⏳ 未下载", text_color="gray")
-        self.vad_status.grid(row=7, column=1, padx=5, pady=5, sticky="w")
+        # VAD 状态（初始隐藏）
+        self.vad_status = ctk.CTkLabel(self, text="", text_color="gray")
+        self.vad_status.grid(row=row, column=1, padx=5, pady=5, sticky="w")
         self.vad_btn = ctk.CTkButton(self, text="下载模型", command=self._download_vad, width=140)
-        self.vad_btn.grid(row=7, column=2, padx=5, pady=5, sticky="w")
+        self.vad_btn.grid(row=row, column=2, padx=5, pady=5, sticky="w")
+        row += 1
         
         # MFA 模型区域
         ctk.CTkLabel(self, text="MFA 声学模型", font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=8, column=0, columnspan=3, padx=10, pady=(20, 5), sticky="w"
+            row=row, column=0, columnspan=3, padx=10, pady=(20, 5), sticky="w"
         )
+        row += 1
         ctk.CTkLabel(self, text="Montreal Forced Aligner 模型，用于语音对齐", text_color="gray").grid(
-            row=9, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w"
+            row=row, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w"
         )
+        row += 1
         
-        ctk.CTkLabel(self, text="模型目录:").grid(row=10, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(self, text="模型目录:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.mfa_dir_var = ctk.StringVar(value=self.config.get("mfa_dir"))
-        ctk.CTkEntry(self, textvariable=self.mfa_dir_var, width=320).grid(row=10, column=1, padx=5, pady=5, sticky="w")
-        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_mfa_dir).grid(row=10, column=2, padx=5, pady=5)
+        ctk.CTkEntry(self, textvariable=self.mfa_dir_var, width=320).grid(row=row, column=1, padx=5, pady=5, sticky="w")
+        ctk.CTkButton(self, text="浏览", width=60, command=self._browse_mfa_dir).grid(row=row, column=2, padx=5, pady=5)
+        row += 1
         
-        ctk.CTkLabel(self, text="选择语言:").grid(row=11, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(self, text="选择语言:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.mfa_lang_var = ctk.StringVar(value="mandarin")
         ctk.CTkComboBox(
             self, values=["mandarin", "japanese"],
             variable=self.mfa_lang_var, width=200,
             command=self._on_mfa_lang_change
-        ).grid(row=11, column=1, padx=5, pady=5, sticky="w")
+        ).grid(row=row, column=1, padx=5, pady=5, sticky="w")
         self.mfa_lang_desc = ctk.CTkLabel(self, text="中文 (普通话)", text_color="gray")
-        self.mfa_lang_desc.grid(row=11, column=2, padx=5, pady=5, sticky="w")
+        self.mfa_lang_desc.grid(row=row, column=2, padx=5, pady=5, sticky="w")
+        row += 1
         
-        ctk.CTkLabel(self, text="状态:").grid(row=12, column=0, padx=10, pady=5, sticky="w")
-        self.mfa_status = ctk.CTkLabel(self, text="⏳ 未下载", text_color="gray")
-        self.mfa_status.grid(row=12, column=1, padx=5, pady=5, sticky="w")
+        # MFA 状态（初始隐藏）
+        self.mfa_status = ctk.CTkLabel(self, text="", text_color="gray")
+        self.mfa_status.grid(row=row, column=1, padx=5, pady=5, sticky="w")
         self.mfa_download_btn = ctk.CTkButton(self, text="下载模型", command=self._download_mfa_models, width=140)
-        self.mfa_download_btn.grid(row=12, column=2, padx=5, pady=5, sticky="w")
-        
-        self._check_vad_status()
+        self.mfa_download_btn.grid(row=row, column=2, padx=5, pady=5, sticky="w")
 
     def _get_model_desc(self):
         info = ConfigManager.WHISPER_MODELS.get(self.whisper_model_var.get(), {})
@@ -176,7 +195,8 @@ class ModelDownloadFrame(ctk.CTkFrame):
     def _on_model_change(self, choice):
         self.model_desc_label.configure(text=self._get_model_desc())
         self.config.set("whisper_model", choice)
-        self.whisper_status.configure(text="⏳ 未加载", text_color="gray")
+        # 切换模型时清空状态显示，重置 pipeline
+        self.whisper_status.configure(text="")
         self.whisper_pipe = None
     
     def _browse_models_dir(self):
@@ -194,13 +214,6 @@ class ModelDownloadFrame(ctk.CTkFrame):
     def _on_mfa_lang_change(self, choice):
         from src.mfa_model_downloader import get_available_languages
         self.mfa_lang_desc.configure(text=get_available_languages().get(choice, ""))
-    
-    def _check_vad_status(self):
-        from src.silero_vad_downloader import is_vad_model_downloaded
-        if is_vad_model_downloaded(self.config.get("models_dir")):
-            self.vad_status.configure(text="✅ 已下载", text_color="green")
-        else:
-            self.vad_status.configure(text="⏳ 未下载", text_color="gray")
     
     def _download_vad(self):
         if self._download_thread and self._download_thread.is_alive():
@@ -412,8 +425,9 @@ class MakeVoiceBankFrame(ctk.CTkFrame):
         ctk.CTkLabel(self.scroll_frame, text="转录语言:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.language_var = ctk.StringVar(value="chinese")
         ctk.CTkComboBox(
-            self.scroll_frame, values=["chinese", "japanese", "english"],
-            variable=self.language_var, width=150
+            self.scroll_frame, values=["chinese", "japanese"],
+            variable=self.language_var, width=150,
+            command=self._on_language_change
         ).grid(row=row, column=1, padx=5, pady=5, sticky="w")
         row += 1
         
@@ -529,6 +543,44 @@ class MakeVoiceBankFrame(ctk.CTkFrame):
         else:
             self.acoustic_combo.configure(values=["(未找到声学模型)"])
             self.acoustic_combo.set("(未找到声学模型)")
+        
+        # 根据当前语言自动选择对应模型
+        self._auto_select_mfa_models()
+    
+    def _on_language_change(self, choice):
+        """语言选择变化时自动选择对应的 MFA 模型和字典"""
+        self._auto_select_mfa_models()
+    
+    def _auto_select_mfa_models(self):
+        """根据当前语言自动选择对应的 MFA 模型和字典"""
+        language = self.language_var.get()
+        
+        # 语言到 MFA 模型关键字的映射
+        lang_to_mfa = {
+            "chinese": "mandarin",
+            "japanese": "japanese",
+            "english": "english"
+        }
+        
+        mfa_keyword = lang_to_mfa.get(language, "")
+        if not mfa_keyword:
+            return
+        
+        # 自动选择字典
+        dict_values = self.dict_combo.cget("values")
+        if dict_values and not dict_values[0].startswith("("):
+            for dict_file in dict_values:
+                if mfa_keyword in dict_file.lower():
+                    self.dict_combo.set(dict_file)
+                    break
+        
+        # 自动选择声学模型
+        acoustic_values = self.acoustic_combo.cget("values")
+        if acoustic_values and not acoustic_values[0].startswith("("):
+            for acoustic_file in acoustic_values:
+                if mfa_keyword in acoustic_file.lower():
+                    self.acoustic_combo.set(acoustic_file)
+                    break
     
     def _browse_input_file(self):
         path = filedialog.askopenfilename(
@@ -970,6 +1022,22 @@ class ExportVoiceBankFrame(ctk.CTkFrame):
         # 动态生成插件卡片
         self._create_plugin_cards()
         
+        # 底部按钮区域
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=6, column=0, columnspan=3, padx=10, pady=(5, 10), sticky="ew")
+        
+        ctk.CTkButton(
+            btn_frame, text="📂 打开导出文件夹", width=140,
+            command=self._open_export_folder,
+            fg_color="#5a6a7a", hover_color="#4a5a6a"
+        ).pack(side="left", padx=5)
+        
+        ctk.CTkButton(
+            btn_frame, text="🔌 前往导出插件仓库", width=160,
+            command=self._open_plugin_repo,
+            fg_color="#5a6a7a", hover_color="#4a5a6a"
+        ).pack(side="left", padx=5)
+        
         # 配置行列权重
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(5, weight=1)
@@ -1030,6 +1098,29 @@ class ExportVoiceBankFrame(ctk.CTkFrame):
         
         bank_dir = self.config.get("bank_dir", "bank")
         ExportSettingsDialog(self, plugin, voice_bank, bank_dir, self.log_callback)
+    
+    def _open_export_folder(self):
+        """打开导出文件夹"""
+        import subprocess
+        export_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "export"
+        )
+        if not os.path.exists(export_dir):
+            os.makedirs(export_dir, exist_ok=True)
+        
+        # Windows 使用 explorer 打开文件夹
+        if sys.platform == "win32":
+            os.startfile(export_dir)
+        elif sys.platform == "darwin":
+            subprocess.run(["open", export_dir])
+        else:
+            subprocess.run(["xdg-open", export_dir])
+    
+    def _open_plugin_repo(self):
+        """打开导出插件仓库"""
+        import webbrowser
+        webbrowser.open("https://github.com/TNOTawa/JinrikiHelper-Plugin")
     
     def _refresh_voice_banks(self):
         """刷新音源列表"""

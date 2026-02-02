@@ -217,6 +217,7 @@ def run_mfa_alignment(
     temp_dir: Optional[str] = None,
     single_speaker: bool = True,
     clean: bool = True,
+    num_jobs: Optional[int] = None,
     progress_callback: Optional[Callable[[str], None]] = None
 ) -> tuple[bool, str]:
     """
@@ -230,6 +231,7 @@ def run_mfa_alignment(
         temp_dir: 临时目录，默认使用 mfa_temp（云端会自动创建独立目录）
         single_speaker: 是否为单说话人模式
         clean: 是否清理旧缓存
+        num_jobs: 并行进程数，默认使用 CPU 核心数
         progress_callback: 进度回调函数
     
     返回:
@@ -288,9 +290,17 @@ def run_mfa_alignment(
         "--temp_directory", str(temp_dir),
     ]
     
-    # Windows 禁用多进程避免问题，Linux 可以启用
-    if IS_WINDOWS:
-        cmd.extend(["--use_mp", "false"])
+    # 设置并行进程数（默认使用 CPU 核心数，最少 1 个）
+    import multiprocessing
+    if num_jobs is None:
+        num_jobs = max(1, multiprocessing.cpu_count())
+    cmd.extend(["--num_jobs", str(num_jobs)])
+    
+    # Windows 外挂模式：启用多进程可能有兼容性问题，但可以尝试
+    # 如果遇到问题，用户可以通过设置 num_jobs=1 来禁用
+    # 注释掉原来的禁用逻辑，让 Windows 也能使用多进程
+    # if IS_WINDOWS:
+    #     cmd.extend(["--use_mp", "false"])
     
     if clean:
         cmd.append("--clean")
@@ -299,6 +309,7 @@ def run_mfa_alignment(
     
     log(f"正在启动 MFA 对齐引擎...")
     log(f"运行平台: {'Windows (外挂模式)' if IS_WINDOWS else 'Linux (系统安装)'}")
+    log(f"并行进程数: {num_jobs}")
     log(f"输入目录: {corpus_dir}")
     log(f"输出目录: {output_dir}")
     
