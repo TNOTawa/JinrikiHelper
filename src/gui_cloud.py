@@ -440,6 +440,7 @@ def process_make_voicebank(
         log("\n" + "=" * 50)
         log("【步骤2】MFA语音对齐")
         
+        mfa_success = False
         if check_mfa_available():
             success, msg = pipeline.step1_mfa_align()
             if not success:
@@ -447,8 +448,15 @@ def process_make_voicebank(
                 log("继续导出（无TextGrid）...")
             else:
                 log(f"✅ {msg}")
+                mfa_success = True
         else:
             log("⚠️ MFA不可用，跳过对齐步骤")
+        
+        # MFA 不可用时的提示
+        if not mfa_success:
+            log("")
+            log("💡 提示：音源包中缺少 TextGrid 对齐数据")
+            log("   如需导出 UTAU oto.ini，请前往「MFA补对齐」页面进行修复")
         
         # 打包结果
         progress(0.9, desc="打包结果...")
@@ -1288,6 +1296,36 @@ def create_cloud_ui():
                     inputs=[export_upload, export_plugin] + all_option_components,
                     outputs=[export_status, export_log, export_download]
                 )
+            
+            # ==================== MFA补对齐页 ====================
+            with gr.Tab("🔧 MFA补对齐"):
+                gr.Markdown("""
+                ## MFA 补对齐
+                
+                <div style="background: linear-gradient(135deg, #cce5ff 0%, #b8daff 100%); border-left: 4px solid #004085; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;">
+                    <p style="margin: 0 0 8px 0; font-weight: bold; color: #004085;">ℹ️ 功能说明</p>
+                    <p style="margin: 0; color: #004085; line-height: 1.6;">
+                        如果在「制作音源」时 MFA 不可用或对齐失败，音源包中将缺少 TextGrid 文件。<br/>
+                        此页面可以为已有的音源包补充 MFA 对齐数据，以便后续导出 UTAU oto.ini 等格式。
+                    </p>
+                </div>
+                
+                ---
+                
+                ### 🚧 功能开发中
+                
+                此功能正在开发中，敬请期待！
+                
+                **计划功能：**
+                - 上传缺少 TextGrid 的音源包
+                - 自动检测并执行 MFA 对齐
+                - 下载补充对齐数据后的完整音源包
+                
+                ---
+                
+                > 💡 **临时解决方案**：如果云端 MFA 不可用，可以下载本地版工具进行处理。
+                > 本地版支持 Windows 系统，内置 MFA 引擎，无需额外配置。
+                """)
             
             # ==================== 关于页 ====================
             with gr.Tab("ℹ️ 关于"):

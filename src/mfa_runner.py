@@ -47,18 +47,23 @@ def check_mfa_available() -> bool:
         mfa_path = shutil.which("mfa")
         if mfa_path:
             # 验证 mfa 能正常运行
+            # 云端首次运行可能需要较长时间初始化，设置 120 秒超时
             try:
                 result = subprocess.run(
                     ["mfa", "version"],
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=120
                 )
                 if result.returncode == 0:
                     logger.info(f"MFA 可用: {result.stdout.strip()}")
                     return True
                 else:
                     logger.warning(f"MFA 命令执行失败: {result.stderr or result.stdout}")
+            except subprocess.TimeoutExpired:
+                logger.warning("MFA 验证超时（120秒），可能正在初始化，将尝试继续使用")
+                # 超时但命令存在，假设可用（实际对齐时会再次验证）
+                return True
             except Exception as e:
                 logger.warning(f"MFA 验证异常: {e}")
         else:
