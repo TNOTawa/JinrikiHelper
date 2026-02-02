@@ -1320,11 +1320,10 @@ def create_cloud_ui():
                 本工具集成 Montreal Forced Aligner (MIT License)
                 """)
         
-        # 定时刷新并发状态（每3秒）
+        # 页面加载时刷新并发状态
         app.load(
             fn=get_concurrency_status,
-            outputs=[concurrency_display],
-            every=3
+            outputs=[concurrency_display]
         )
     
     return app
