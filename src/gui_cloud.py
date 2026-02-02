@@ -1228,6 +1228,14 @@ def create_cloud_ui():
         
         gr.Markdown("语音数据集处理工具 - 自动化制作语音音源库")
         gr.Markdown("> ☁️ 云端版：上传音频 → 自动处理 → 下载结果")
+        gr.Markdown("""
+        <div style="background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); border-left: 4px solid #28a745; padding: 10px 14px; border-radius: 8px; margin: 8px 0;">
+            <p style="margin: 0; color: #155724; line-height: 1.5;">
+                <strong>📊 处理状态说明：</strong>只有当<strong>进度条弹出并开始滚动</strong>时，才表示正在处理中。<br/>
+                如果点击按钮后长时间没有进度条出现，可能是正在排队等待，或遇到了问题。
+            </p>
+        </div>
+        """)
         
         with gr.Tabs():
             # ==================== 制作音源页 ====================
@@ -1374,7 +1382,8 @@ def create_cloud_ui():
                 make_btn.click(
                     fn=process_make_voicebank,
                     inputs=[audio_upload, make_source_name, make_language, make_whisper],
-                    outputs=[make_status, make_log, make_download, session_voicebank]
+                    outputs=[make_status, make_log, make_download, session_voicebank],
+                    concurrency_limit=None  # 无上限并发，云端 CPU 按需分配
                 )
             
             # ==================== 导出音源页 ====================
@@ -1579,7 +1588,8 @@ def create_cloud_ui():
                 export_btn.click(
                     fn=collect_and_export,
                     inputs=[export_upload, export_plugin] + all_option_components,
-                    outputs=[export_status, export_log, export_download]
+                    outputs=[export_status, export_log, export_download],
+                    concurrency_limit=None  # 无上限并发，云端 CPU 按需分配
                 )
             
             # ==================== MFA补对齐页 ====================
@@ -1652,7 +1662,8 @@ def create_cloud_ui():
                 mfa_btn.click(
                     fn=process_mfa_realign,
                     inputs=[mfa_upload, mfa_language],
-                    outputs=[mfa_process_status, mfa_log, mfa_download]
+                    outputs=[mfa_process_status, mfa_log, mfa_download],
+                    concurrency_limit=None  # 无上限并发，云端 CPU 按需分配
                 )
             
             # ==================== 关于页 ====================
