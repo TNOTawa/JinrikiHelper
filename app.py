@@ -578,10 +578,8 @@ def main():
     app = create_cloud_ui()
     
     # 云端配置
-    # 启用队列并设置并发数，允许多用户同时处理
-    app.queue(
-        default_concurrency_limit=25,  # 同时处理的请求数
-    )
+    # 启用队列，魔搭CPU按需分配，无需设置并发上限
+    app.queue()
     app.launch(
         server_name="0.0.0.0",
         server_port=7860,

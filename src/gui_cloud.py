@@ -29,7 +29,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== 并发计数器 ====================
-MAX_CONCURRENCY = 25
 _concurrency_lock = threading.Lock()
 _current_concurrency = 0
 
@@ -53,7 +52,7 @@ def decrement_concurrency():
 def get_concurrency_status() -> str:
     """获取当前并发状态文本"""
     with _concurrency_lock:
-        return f"当前并发数：{_current_concurrency}/{MAX_CONCURRENCY}"
+        return f"当前并发数：{_current_concurrency}"
 
 
 def safe_gradio_handler(func):
@@ -1698,10 +1697,8 @@ def create_cloud_ui():
 def main():
     """云端入口"""
     app = create_cloud_ui()
-    # 启用队列并设置并发数，允许多用户同时处理
-    app.queue(
-        default_concurrency_limit=MAX_CONCURRENCY,  # 同时处理的请求数
-    )
+    # 启用队列，魔搭CPU按需分配，无需设置并发上限
+    app.queue()
     app.launch(
         server_name="0.0.0.0",
         server_port=7860,
