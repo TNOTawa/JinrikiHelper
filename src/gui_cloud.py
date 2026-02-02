@@ -89,6 +89,8 @@ def safe_gradio_handler(func):
                 return error_msg, error_detail, None
             elif func.__name__ == 'collect_and_export':
                 return error_msg, error_detail, None
+            elif func.__name__ == 'process_mfa_realign':
+                return error_msg, error_detail, None
             else:
                 # 默认返回单个错误消息
                 return error_msg
@@ -727,6 +729,289 @@ def process_export_voicebank(
         cleanup_workspace(workspace)
 
 
+# ==================== MFA补对齐功能 ====================
+
+def validate_mfa_voicebank(zip_file) -> str:
+    """
+    验证上传的音源包，检查 TextGrid 状态
+    
+    返回: 状态信息字符串
+    """
+    if not zip_file:
+        return "⏳ 请上传音源压缩包"
+    
+    zip_path = zip_file.name if hasattr(zip_file, 'name') else str(zip_file)
+    
+    if not zip_path.lower().endswith('.zip'):
+        return "❌ 请上传 .zip 格式的压缩包"
+    
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            names = zf.namelist()
+            
+            # 统计文件
+            wav_files = [n for n in names if n.endswith('.wav') and 'slices/' in n]
+            lab_files = [n for n in names if n.endswith('.lab') and 'slices/' in n]
+            tg_files = [n for n in names if n.endswith('.TextGrid') and 'textgrid/' in n]
+            
+            if not wav_files:
+                return "❌ 未找到 slices 目录下的 .wav 文件"
+            
+            if not lab_files:
+                return "❌ 未找到 slices 目录下的 .lab 标注文件"
+            
+            # 获取音源名称
+            source_name = None
+            if 'meta.json' in names:
+                try:
+                    with zf.open('meta.json') as mf:
+                        meta = json.load(mf)
+                        source_name = meta.get('source_name')
+                except:
+                    pass
+            
+            if not source_name:
+                source_name = Path(zip_path).stem.replace('_音源数据', '')
+            
+            # 构建状态信息
+            info_parts = [f"📝 音源: {source_name}"]
+            info_parts.append(f"🎵 切片: {len(wav_files)} 个 WAV")
+            info_parts.append(f"📄 标注: {len(lab_files)} 个 LAB")
+            
+            if tg_files:
+                coverage = len(tg_files) / len(wav_files) * 100 if wav_files else 0
+                if coverage >= 100:
+                    info_parts.append(f"✅ TextGrid: {len(tg_files)} 个 (已完整)")
+                else:
+                    info_parts.append(f"⚠️ TextGrid: {len(tg_files)} 个 ({coverage:.0f}% 覆盖)")
+            else:
+                info_parts.append("❌ TextGrid: 无 (需要对齐)")
+            
+            return " | ".join(info_parts)
+            
+    except zipfile.BadZipFile:
+        return "❌ 无效的 zip 文件"
+    except Exception as e:
+        return f"❌ 验证失败: {e}"
+
+
+@safe_gradio_handler
+def process_mfa_realign(
+    zip_file,
+    language: str,
+    progress=gr.Progress()
+) -> Tuple[str, str, Optional[str]]:
+    """
+    MFA 补对齐：为缺少 TextGrid 的音源包执行 MFA 对齐
+    
+    参数:
+        zip_file: 上传的音源压缩包
+        language: 语言选择
+    
+    返回: (状态, 日志, 下载文件路径)
+    """
+    # 增加并发计数
+    increment_concurrency()
+    
+    logs = []
+    workspace = None
+    
+    def log(msg):
+        logs.append(msg)
+        logger.info(msg)
+    
+    # 验证输入
+    if not zip_file:
+        decrement_concurrency()
+        return "❌ 请上传音源压缩包", "", None
+    
+    zip_path = zip_file.name if hasattr(zip_file, 'name') else str(zip_file)
+    
+    # 检查 MFA 是否可用
+    if not check_mfa_available():
+        decrement_concurrency()
+        return "❌ MFA 不可用，无法执行对齐", "请检查 MFA 环境配置", None
+    
+    log("📦 开始处理音源包...")
+    
+    # 创建临时工作空间
+    workspace = create_temp_workspace()
+    log(f"🔧 创建工作空间")
+    
+    try:
+        # 解压音源包
+        progress(0.1, desc="解压音源包...")
+        
+        # 先检查压缩包结构，确定音源名称
+        source_name = None
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            names = zf.namelist()
+            
+            # 尝试从 meta.json 获取音源名称
+            if 'meta.json' in names:
+                try:
+                    with zf.open('meta.json') as mf:
+                        meta = json.load(mf)
+                        source_name = meta.get('source_name')
+                except:
+                    pass
+            
+            if not source_name:
+                source_name = Path(zip_path).stem.replace('_音源数据', '')
+        
+        log(f"📝 音源名称: {source_name}")
+        
+        # 解压到工作目录
+        bank_dir = os.path.join(workspace, "bank")
+        source_dir = os.path.join(bank_dir, source_name)
+        os.makedirs(source_dir, exist_ok=True)
+        
+        success, msg = extract_zip(zip_path, source_dir)
+        if not success:
+            return f"❌ {msg}", "\n".join(logs), None
+        
+        log(f"📂 已解压到工作目录")
+        
+        # 检查目录结构，处理可能的嵌套
+        slices_dir = os.path.join(source_dir, "slices")
+        if not os.path.exists(slices_dir):
+            # 可能解压后有额外的一层目录
+            subdirs = [d for d in os.listdir(source_dir) if os.path.isdir(os.path.join(source_dir, d))]
+            if len(subdirs) == 1:
+                nested_dir = os.path.join(source_dir, subdirs[0])
+                if os.path.exists(os.path.join(nested_dir, "slices")):
+                    # 移动内容到上层
+                    for item in os.listdir(nested_dir):
+                        shutil.move(os.path.join(nested_dir, item), source_dir)
+                    os.rmdir(nested_dir)
+                    slices_dir = os.path.join(source_dir, "slices")
+        
+        if not os.path.exists(slices_dir):
+            return "❌ 未找到 slices 目录", "\n".join(logs), None
+        
+        # 统计文件
+        wav_files = [f for f in os.listdir(slices_dir) if f.endswith('.wav')]
+        lab_files = [f for f in os.listdir(slices_dir) if f.endswith('.lab')]
+        
+        log(f"🎵 找到 {len(wav_files)} 个 WAV 文件")
+        log(f"📄 找到 {len(lab_files)} 个 LAB 标注文件")
+        
+        if not wav_files:
+            return "❌ slices 目录中没有 WAV 文件", "\n".join(logs), None
+        
+        if not lab_files:
+            return "❌ slices 目录中没有 LAB 标注文件", "\n".join(logs), None
+        
+        # 获取 MFA 模型路径
+        progress(0.2, desc="加载 MFA 模型...")
+        mfa_models = scan_mfa_models()
+        dict_path = None
+        acoustic_path = None
+        
+        if mfa_models["dictionary"]:
+            for d in mfa_models["dictionary"]:
+                if language == "japanese" and "japanese" in d.lower():
+                    dict_path = os.path.join(CloudConfig.MFA_DIR, d)
+                    break
+                elif language == "chinese" and "mandarin" in d.lower():
+                    dict_path = os.path.join(CloudConfig.MFA_DIR, d)
+                    break
+            if not dict_path:
+                dict_path = os.path.join(CloudConfig.MFA_DIR, mfa_models["dictionary"][0])
+        
+        if mfa_models["acoustic"]:
+            for a in mfa_models["acoustic"]:
+                if language == "japanese" and "japanese" in a.lower():
+                    acoustic_path = os.path.join(CloudConfig.MFA_DIR, a)
+                    break
+                elif language == "chinese" and "mandarin" in a.lower():
+                    acoustic_path = os.path.join(CloudConfig.MFA_DIR, a)
+                    break
+            if not acoustic_path:
+                acoustic_path = os.path.join(CloudConfig.MFA_DIR, mfa_models["acoustic"][0])
+        
+        if not dict_path or not os.path.exists(dict_path):
+            return f"❌ 未找到 {language} 语言的字典文件", "\n".join(logs), None
+        
+        if not acoustic_path or not os.path.exists(acoustic_path):
+            return f"❌ 未找到 {language} 语言的声学模型", "\n".join(logs), None
+        
+        log(f"📚 字典: {os.path.basename(dict_path)}")
+        log(f"🔊 声学模型: {os.path.basename(acoustic_path)}")
+        
+        # 执行 MFA 对齐
+        progress(0.3, desc="执行 MFA 对齐...")
+        log("\n" + "=" * 50)
+        log("【MFA 强制对齐】")
+        
+        textgrid_dir = os.path.join(source_dir, "textgrid")
+        os.makedirs(textgrid_dir, exist_ok=True)
+        
+        from src.mfa_runner import run_mfa_alignment
+        
+        success, mfa_msg = run_mfa_alignment(
+            corpus_dir=slices_dir,
+            output_dir=textgrid_dir,
+            dict_path=dict_path,
+            model_path=acoustic_path,
+            single_speaker=True,
+            clean=True,
+            progress_callback=log
+        )
+        
+        if not success:
+            log(f"❌ MFA 对齐失败: {mfa_msg}")
+            return "❌ MFA 对齐失败", "\n".join(logs), None
+        
+        log("✅ MFA 对齐完成")
+        
+        # 统计生成的 TextGrid 文件
+        tg_files = [f for f in os.listdir(textgrid_dir) if f.endswith('.TextGrid')]
+        log(f"📊 生成 {len(tg_files)} 个 TextGrid 文件")
+        
+        if not tg_files:
+            return "❌ 未生成任何 TextGrid 文件", "\n".join(logs), None
+        
+        # 更新 meta.json
+        meta_path = os.path.join(source_dir, "meta.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                meta['textgrid_count'] = len(tg_files)
+                meta['mfa_realigned'] = True
+                with open(meta_path, 'w', encoding='utf-8') as f:
+                    json.dump(meta, f, ensure_ascii=False, indent=2)
+                log("📝 已更新 meta.json")
+            except Exception as e:
+                log(f"⚠️ 更新 meta.json 失败: {e}")
+        
+        # 打包结果
+        progress(0.9, desc="打包结果...")
+        log("\n" + "=" * 50)
+        log("【打包结果】")
+        
+        zip_name = f"{source_name}_音源数据_已对齐"
+        result_zip = create_zip(source_dir, zip_name)
+        
+        if result_zip:
+            log(f"📦 已打包: {os.path.basename(result_zip)}")
+            progress(1.0, desc="完成")
+            decrement_concurrency()
+            return "✅ MFA 补对齐完成", "\n".join(logs), result_zip
+        else:
+            decrement_concurrency()
+            return "❌ 打包失败", "\n".join(logs), None
+        
+    except Exception as e:
+        logger.error(f"MFA 补对齐失败: {e}", exc_info=True)
+        decrement_concurrency()
+        return f"❌ 处理失败: {e}", "\n".join(logs), None
+    
+    finally:
+        cleanup_workspace(workspace)
+
+
 # ==================== 插件选项 UI 生成 ====================
 
 def get_plugin_options_config(plugins: Dict[str, Any]) -> Dict[str, List[Dict]]:
@@ -1309,23 +1594,66 @@ def create_cloud_ui():
                         此页面可以为已有的音源包补充 MFA 对齐数据，以便后续导出 UTAU oto.ini 等格式。
                     </p>
                 </div>
-                
-                ---
-                
-                ### 🚧 功能开发中
-                
-                此功能正在开发中，敬请期待！
-                
-                **计划功能：**
-                - 上传缺少 TextGrid 的音源包
-                - 自动检测并执行 MFA 对齐
-                - 下载补充对齐数据后的完整音源包
-                
-                ---
-                
-                > 💡 **临时解决方案**：如果云端 MFA 不可用，可以下载本地版工具进行处理。
-                > 本地版支持 Windows 系统，内置 MFA 引擎，无需额外配置。
                 """)
+                
+                gr.Markdown("### 上传音源包")
+                gr.Markdown("上传包含 `slices` 目录（.wav + .lab 文件）的音源压缩包")
+                
+                mfa_upload = gr.File(
+                    label="上传音源包 (.zip)",
+                    file_types=[".zip"]
+                )
+                
+                mfa_info = gr.Textbox(
+                    label="音源信息",
+                    interactive=False,
+                    placeholder="上传后显示音源信息和 TextGrid 状态"
+                )
+                
+                # 上传后自动验证
+                mfa_upload.change(
+                    fn=validate_mfa_voicebank,
+                    inputs=[mfa_upload],
+                    outputs=[mfa_info]
+                )
+                
+                gr.Markdown("---")
+                gr.Markdown("### 对齐设置")
+                
+                with gr.Row():
+                    mfa_language = gr.Dropdown(
+                        choices=CloudConfig.LANGUAGES,
+                        value="chinese",
+                        label="语言",
+                        info="选择与音源匹配的语言"
+                    )
+                    mfa_status_display = gr.Textbox(
+                        label="MFA 状态",
+                        value=mfa_status,
+                        interactive=False
+                    )
+                
+                mfa_btn = gr.Button("🔧 开始对齐", variant="primary", size="lg")
+                
+                mfa_process_status = gr.Textbox(label="状态", interactive=False)
+                mfa_log = gr.Textbox(label="处理日志", lines=10, interactive=False)
+                
+                gr.Markdown("### 下载结果")
+                mfa_download = gr.File(label="补齐后的音源包下载", interactive=False)
+                
+                gr.Markdown("""
+                > 💡 **处理流程**：
+                > 1. 解压上传的音源包
+                > 2. 检测 slices 目录中的 .wav 和 .lab 文件
+                > 3. 执行 MFA 强制对齐，生成 TextGrid 文件
+                > 4. 打包完整音源包供下载
+                """)
+                
+                mfa_btn.click(
+                    fn=process_mfa_realign,
+                    inputs=[mfa_upload, mfa_language],
+                    outputs=[mfa_process_status, mfa_log, mfa_download]
+                )
             
             # ==================== 关于页 ====================
             with gr.Tab("ℹ️ 关于"):
