@@ -79,8 +79,13 @@ def _get_mfa_command() -> list:
         return ["mfa"]
 
 
-def _build_mfa_env() -> dict:
-    """构造 MFA 专用环境变量"""
+def _build_mfa_env(mfa_root: Optional[Path] = None) -> dict:
+    """
+    构造 MFA 专用环境变量
+    
+    参数:
+        mfa_root: 会话独立的 MFA 数据目录（用于并发隔离）
+    """
     env = os.environ.copy()
     
     if IS_WINDOWS:
@@ -93,6 +98,11 @@ def _build_mfa_env() -> dict:
         ]
         env["PATH"] = ";".join(mfa_paths) + ";" + env.get("PATH", "")
     else:
+        # Linux: 设置会话独立的 MFA_ROOT_DIR（解决并发数据库冲突）
+        if mfa_root:
+            env["MFA_ROOT_DIR"] = str(mfa_root)
+            logger.info(f"设置会话独立 MFA_ROOT_DIR: {mfa_root}")
+        
         # Linux: 设置 pkuseg 模型目录（云端使用持久化路径）
         persistent_models = Path("/home/studio_service/models")
         if persistent_models.exists():
@@ -164,6 +174,36 @@ def _clean_dict_empty_lines(dict_path: str) -> int:
         return 0
 
 
+def _create_isolated_mfa_root(session_id: str) -> Path:
+    """
+    为每个会话创建独立的 MFA_ROOT_DIR，避免多用户并发时数据库冲突
+    
+    MFA 使用 MFA_ROOT_DIR 环境变量指定数据目录，包含：
+    - pretrained_models/: 预训练模型缓存
+    - 各种 .db 文件: SQLite 数据库
+    
+    通过为每个会话创建独立目录，完全隔离并发用户
+    """
+    import tempfile
+    
+    # 在系统临时目录下创建会话专属的 MFA 根目录
+    mfa_root = Path(tempfile.gettempdir()) / f"mfa_session_{session_id}"
+    mfa_root.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"创建会话独立 MFA 目录: {mfa_root}")
+    return mfa_root
+
+
+def _cleanup_isolated_mfa_root(mfa_root: Path):
+    """清理会话独立的 MFA 目录"""
+    if mfa_root and mfa_root.exists() and "mfa_session_" in str(mfa_root):
+        try:
+            shutil.rmtree(mfa_root)
+            logger.info(f"已清理会话 MFA 目录: {mfa_root}")
+        except Exception as e:
+            logger.warning(f"清理会话 MFA 目录失败: {e}")
+
+
 def run_mfa_alignment(
     corpus_dir: str,
     output_dir: str,
@@ -196,6 +236,10 @@ def run_mfa_alignment(
         logger.info(msg)
         if progress_callback:
             progress_callback(msg)
+    
+    # 为本次会话创建独立的 MFA 数据目录（并发安全）
+    session_id = uuid.uuid4().hex[:8]
+    isolated_mfa_root = _create_isolated_mfa_root(session_id) if not IS_WINDOWS else None
     
     # 检查环境
     if not check_mfa_available():
@@ -254,7 +298,7 @@ def run_mfa_alignment(
     log(f"输出目录: {output_dir}")
     
     try:
-        env = _build_mfa_env()
+        env = _build_mfa_env(isolated_mfa_root)
         
         result = subprocess.run(
             cmd,
@@ -295,6 +339,9 @@ def run_mfa_alignment(
                 shutil.rmtree(temp_dir)
             except Exception:
                 pass
+        # 清理会话独立的 MFA 数据目录
+        if isolated_mfa_root:
+            _cleanup_isolated_mfa_root(isolated_mfa_root)
 
 
 def run_mfa_validate(
