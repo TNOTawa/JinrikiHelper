@@ -49,22 +49,20 @@ pip install -r requirements.txt
 
 ### 2. 下载 MFA 引擎
 
-MFA 引擎体积较大，未包含在仓库中，请从以下地址下载：
+MFA 引擎体积较大，未包含在仓库中。请下载软件便携版，其中已包含 MFA 引擎。
 
-| 网盘 | 链接 |
-|------|------|
-| 百度网盘 | [待补充] |
-| Google Drive | [待补充] |
-
-下载后解压到项目根目录的 `tools/` 文件夹下，确保目录结构如下：
+便携版下载后解压即可使用，目录结构如下：
 
 ```
-tools/
-└── mfa_engine/
-    ├── python.exe
-    ├── Scripts/
-    │   └── mfa.exe
-    └── ...
+人力V助手/
+├── main.py
+├── tools/
+│   └── mfa_engine/
+│       ├── python.exe
+│       ├── Scripts/
+│       │   └── mfa.exe
+│       └── ...
+└── ...
 ```
 
 ## 使用方法
@@ -146,7 +144,7 @@ success, msg = pipeline.run_make_pipeline()
 - `pypinyin` - 中文转拼音
 - `pykakasi` - 日文转罗马音
 
-MFA 环境需单独下载，详见安装说明。
+MFA 环境需单独下载，详见[MFA引擎安装说明](docs\MFA引擎安装说明.md)。
 
 ## 许可证
 

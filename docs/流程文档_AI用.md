@@ -8,8 +8,8 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Web UI 界面 (gui.py)                         │
-│                    基于 Gradio 6.2.0 构建                        │
+│                  本地桌面 GUI (gui_old.py)                       │
+│                 基于 CustomTkinter 构建                          │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
 │  │  模型下载页   │  │  制作音源页   │  │     导出音源页        │   │
 │  └──────────────┘  └──────────────┘  └──────────────────────┘   │
@@ -37,8 +37,8 @@
 
 ```
 项目根目录/
-├── main.py                 # 程序入口 (Web UI)
-├── main_local.py           # 本地桌面入口 (CustomTkinter GUI)
+├── main.py                 # 本地桌面入口 (CustomTkinter GUI)
+├── app.py                  # 云端入口 (Gradio Web UI)
 ├── config.json             # 全局配置文件
 ├── bank/                   # 音源库目录
 │   └── [音源名称]/
@@ -55,8 +55,8 @@
 ├── tools/
 │   └── mfa_engine/         # MFA独立运行环境 (Sidecar)
 └── src/                    # 源代码目录
-    ├── gui.py              # Web UI (Gradio 6.2.0)
-    ├── gui_old.py          # 旧版桌面 GUI (CustomTkinter)
+    ├── gui_old.py          # 本地桌面 GUI (CustomTkinter)
+    ├── gui_cloud.py        # 云端 Web UI (Gradio 6.2.0)
     ├── pipeline.py         # 流水线核心
     ├── audio_processor.py  # 音频处理
     ├── text_processor.py   # 文本处理
@@ -311,34 +311,24 @@ MFA 支持三种运行模式:
 
 ## 使用流程
 
-### 方式一: 本地 Web UI (Gradio)
+### 方式一: 本地桌面 GUI (CustomTkinter)
 
-1. 运行 `python main.py` 启动 Web UI
-2. 浏览器自动打开 http://127.0.0.1:7860
-3. 在「📦 模型下载」页下载所需模型:
+1. 运行 `python main.py` 启动桌面应用
+2. 在「📦 模型下载」页下载所需模型:
    - Whisper 语音识别模型 (small/medium)
    - Silero VAD 语音活动检测模型
    - MFA 声学模型和字典 (中文/日文)
-4. 在「🎵 制作音源」页:
+3. 在「🎵 制作音源」页:
    - 设置音源名称和转录语言
-   - 上传或输入音频文件路径
+   - 选择音频文件路径
    - 选择 Whisper 模型和 MFA 模型
    - 点击「一键执行全部流程」或分步执行
-5. 在「📤 导出音源」页:
+4. 在「📤 导出音源」页:
    - 选择已制作的音源
    - 选择导出插件
    - 配置导出选项并执行
-   - 点击下载按钮获取结果
 
-> 注: 旧版 CustomTkinter 桌面 GUI 已移至 `src/gui_old.py`，可通过 `python main_local.py` 启动
-
-### 方式二: 本地桌面 GUI (CustomTkinter)
-
-1. 运行 `python main_local.py` 启动桌面应用
-2. 使用原生窗口界面操作，功能与 Web UI 相同
-3. 适合不需要浏览器的本地独立运行场景
-
-### 方式三: 云端部署 (HF Spaces / 魔塔社区)
+### 方式二: 云端部署 (HF Spaces / 魔塔社区)
 
 1. 使用 `app.py` 作为入口文件
 2. 云端环境自动安装 MFA 和下载模型
@@ -348,7 +338,7 @@ MFA 支持三种运行模式:
 - Hugging Face Spaces (Gradio SDK)
 - 魔塔社区 ModelScope (推荐，国内访问快)
 
-### 方式四: 命令行/脚本
+### 方式三: 命令行/脚本
 
 ```python
 from src.pipeline import PipelineConfig, VoiceBankPipeline
