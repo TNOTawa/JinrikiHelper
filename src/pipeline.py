@@ -346,12 +346,24 @@ class VoiceBankPipeline:
         import subprocess
         import numpy as np
         
+        # 确保路径是绝对路径，避免编码问题
+        audio_path = os.path.abspath(audio_path)
+        
+        # 检查文件是否存在
+        if not os.path.exists(audio_path):
+            raise RuntimeError(f"音频文件不存在: {audio_path}")
+        
         # 使用 ffprobe 获取采样率
         probe_cmd = [
             'ffprobe', '-v', 'quiet', '-print_format', 'json',
             '-show_streams', audio_path
         ]
-        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        probe_result = subprocess.run(
+            probe_cmd, 
+            capture_output=True, 
+            encoding='utf-8',
+            errors='replace'
+        )
         
         sr = 44100  # 默认采样率
         if probe_result.returncode == 0:
@@ -372,13 +384,18 @@ class VoiceBankPipeline:
             '-acodec', 'pcm_s16le',
             '-ac', '1',  # 单声道
             '-ar', str(sr),  # 保持原采样率
-            '-v', 'quiet',
+            '-v', 'error',  # 只输出错误信息
             '-'
         ]
         result = subprocess.run(cmd, capture_output=True)
         
         if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg 读取音频失败: {audio_path}")
+            # 获取错误信息
+            stderr_msg = result.stderr.decode('utf-8', errors='replace').strip()
+            raise RuntimeError(f"ffmpeg 读取音频失败: {audio_path}\n错误: {stderr_msg}")
+        
+        if len(result.stdout) == 0:
+            raise RuntimeError(f"ffmpeg 输出为空，可能是文件损坏或格式不支持: {audio_path}")
         
         # 转换为 numpy 数组
         audio = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
