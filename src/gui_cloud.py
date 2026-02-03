@@ -480,17 +480,32 @@ def process_make_voicebank(
         os.makedirs(bank_dir, exist_ok=True)
         
         # 复制音频文件到输入目录
+        # 注意：Gradio 上传的文件名可能包含中文和空格，需要规范化
         progress(0.05, desc="复制音频文件...")
         copied_count = 0
-        for src_path in file_paths:
+        for idx, src_path in enumerate(file_paths):
             # 检查源文件是否存在
             if not os.path.exists(src_path):
                 log(f"⚠️ 文件不存在或已被清理: {src_path}")
                 continue
             try:
-                dst_path = os.path.join(input_dir, os.path.basename(src_path))
-                shutil.copy2(src_path, dst_path)
+                # 获取原始文件名和扩展名
+                original_name = os.path.basename(src_path)
+                _, ext = os.path.splitext(original_name)
+                ext = ext.lower()
+                
+                # 生成安全的文件名（避免中文和空格导致的问题）
+                safe_name = f"audio_{idx:04d}{ext}"
+                dst_path = os.path.join(input_dir, safe_name)
+                
+                # 使用二进制模式复制，确保文件完整性
+                with open(src_path, 'rb') as fsrc:
+                    content = fsrc.read()
+                with open(dst_path, 'wb') as fdst:
+                    fdst.write(content)
+                
                 copied_count += 1
+                log(f"  {original_name} -> {safe_name}")
             except Exception as e:
                 log(f"⚠️ 复制文件失败 {os.path.basename(src_path)}: {e}")
         
