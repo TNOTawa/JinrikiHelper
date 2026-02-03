@@ -375,19 +375,9 @@ def validate_audio_upload(files) -> Tuple[bool, str, List[str]]:
         else:
             path = str(f)
         
-        logger.info(f"文件[{i}] 解析路径: {path}, 存在: {os.path.exists(path)}")
-        
         if path.lower().endswith(CloudConfig.AUDIO_EXTENSIONS):
-            # 检查文件是否存在且非空
-            if os.path.exists(path):
-                size = os.path.getsize(path)
-                logger.info(f"文件[{i}] 大小: {size} bytes")
-                if size > 0:
-                    valid_files.append(path)
-                else:
-                    logger.warning(f"文件为空: {path}")
-            else:
-                logger.warning(f"文件不存在: {path}")
+            valid_files.append(path)
+            logger.info(f"文件[{i}] 有效路径: {path}")
     
     if not valid_files:
         return False, f"未找到有效音频文件，支持格式: {', '.join(CloudConfig.AUDIO_EXTENSIONS)}", []
@@ -498,47 +488,47 @@ def process_make_voicebank(
         os.makedirs(input_dir, exist_ok=True)
         os.makedirs(bank_dir, exist_ok=True)
         
-        # 复制音频文件到输入目录
-        # 注意：Gradio 6.x 上传的文件可能是临时路径，需要正确处理
+        # 复制音频文件到输入目录（重命名为安全文件名）
         progress(0.05, desc="复制音频文件...")
         copied_count = 0
+        copy_errors = []
+        
         for idx, src_path in enumerate(file_paths):
-            # 检查源文件是否存在
+            original_name = os.path.basename(src_path)
+            
+            # 检查源文件
             if not os.path.exists(src_path):
-                log(f"⚠️ 文件不存在或已被清理: {src_path}")
+                copy_errors.append(f"{original_name}: 文件不存在")
                 continue
             
-            # 检查源文件大小
             src_size = os.path.getsize(src_path)
             if src_size == 0:
-                log(f"⚠️ 源文件为空: {src_path}")
+                copy_errors.append(f"{original_name}: 文件为空")
                 continue
             
             try:
-                # 获取原始文件名和扩展名
-                original_name = os.path.basename(src_path)
+                # 生成安全的文件名
                 _, ext = os.path.splitext(original_name)
-                ext = ext.lower()
-                
-                # 生成安全的文件名（避免中文和空格导致的问题）
-                safe_name = f"audio_{idx:04d}{ext}"
+                safe_name = f"audio_{idx:04d}{ext.lower()}"
                 dst_path = os.path.join(input_dir, safe_name)
                 
-                # 使用 shutil.copy2 复制文件（保留元数据）
                 shutil.copy2(src_path, dst_path)
                 
-                # 验证复制后的文件
-                dst_size = os.path.getsize(dst_path)
-                if dst_size != src_size:
-                    log(f"⚠️ 文件复制不完整: {original_name} (源:{src_size} 目标:{dst_size})")
-                    continue
-                
-                copied_count += 1
-                log(f"  {original_name} ({src_size} bytes) -> {safe_name}")
+                # 验证复制结果
+                if os.path.getsize(dst_path) == src_size:
+                    copied_count += 1
+                    log(f"  {original_name} ({src_size} bytes) -> {safe_name}")
+                else:
+                    copy_errors.append(f"{original_name}: 复制不完整")
             except Exception as e:
-                log(f"⚠️ 复制文件失败 {os.path.basename(src_path)}: {e}")
+                copy_errors.append(f"{original_name}: {e}")
+        
+        if copy_errors:
+            for err in copy_errors:
+                log(f"⚠️ {err}")
         
         if copied_count == 0:
+            decrement_concurrency()
             return "❌ 无法访问上传的文件，请重新上传", "\n".join(logs), None, None
         
         log(f"📋 已复制 {copied_count}/{len(file_paths)} 个文件到工作目录")
