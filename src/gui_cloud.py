@@ -317,34 +317,47 @@ def get_audio_duration(file_path: str) -> Optional[float]:
     
     返回: 时长秒数，失败返回 None
     """
+    import subprocess
+    
+    try:
+        # 优先使用 ffprobe（更轻量，不需要解码整个文件）
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            file_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0 and result.stdout.strip():
+            duration = float(result.stdout.strip())
+            if duration > 0:
+                return duration
+        
+        # ffprobe 失败时的错误信息
+        if result.stderr:
+            logger.debug(f"ffprobe 错误: {result.stderr.strip()}")
+        
+    except subprocess.TimeoutExpired:
+        logger.warning(f"ffprobe 超时: {file_path}")
+    except (ValueError, Exception) as e:
+        logger.debug(f"ffprobe 获取时长失败: {e}")
+    
+    # 回退：对于 WAV 文件，使用 wave 模块
     try:
         import wave
         import contextlib
         
-        # 对于 WAV 文件，使用 wave 模块快速获取时长
         if file_path.lower().endswith('.wav'):
             with contextlib.closing(wave.open(file_path, 'r')) as f:
                 frames = f.getnframes()
                 rate = f.getframerate()
                 return frames / float(rate)
-        
-        # 对于其他格式，使用 pydub（如果可用）
-        try:
-            from pydub import AudioSegment
-            audio = AudioSegment.from_file(file_path)
-            return len(audio) / 1000.0  # 毫秒转秒
-        except ImportError:
-            # pydub 不可用，尝试使用 librosa
-            try:
-                import librosa
-                duration = librosa.get_duration(path=file_path)
-                return duration
-            except ImportError:
-                logger.warning(f"无法获取音频时长，缺少 pydub 或 librosa: {file_path}")
-                return None
     except Exception as e:
-        logger.warning(f"获取音频时长失败 {file_path}: {e}")
-        return None
+        logger.debug(f"wave 模块读取失败: {e}")
+    
+    logger.warning(f"无法获取音频时长: {os.path.basename(file_path)}")
+    return None
 
 
 # 云端音频时长限制（秒）
@@ -504,6 +517,32 @@ def process_make_voicebank(
             src_size = os.path.getsize(src_path)
             if src_size == 0:
                 copy_errors.append(f"{original_name}: 文件为空")
+                continue
+            
+            # 验证文件是否为有效音频（检查文件头）
+            try:
+                with open(src_path, 'rb') as f:
+                    header = f.read(12)
+                
+                # 检查常见音频格式的文件头
+                is_valid_audio = False
+                if header[:4] == b'RIFF' and header[8:12] == b'WAVE':  # WAV
+                    is_valid_audio = True
+                elif header[:4] == b'OggS':  # OGG
+                    is_valid_audio = True
+                elif header[:3] == b'ID3' or header[:2] == b'\xff\xfb':  # MP3
+                    is_valid_audio = True
+                elif header[:4] == b'fLaC':  # FLAC
+                    is_valid_audio = True
+                elif header[4:8] == b'ftyp':  # M4A/MP4
+                    is_valid_audio = True
+                
+                if not is_valid_audio:
+                    copy_errors.append(f"{original_name}: 无效的音频文件格式 (header: {header[:8].hex()})")
+                    continue
+                    
+            except Exception as e:
+                copy_errors.append(f"{original_name}: 无法读取文件头 ({e})")
                 continue
             
             try:
