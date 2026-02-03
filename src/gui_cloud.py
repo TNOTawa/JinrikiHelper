@@ -223,12 +223,12 @@ def cleanup_old_jinriki_workspaces(max_age_hours: float = 2.0):
         logger.warning(f"工作空间清理失败: {e}")
 
 
-def start_periodic_cleanup(interval_minutes: int = 30):
+def start_periodic_cleanup(interval_minutes: int = 15):
     """
     启动定期清理任务
     
     参数:
-        interval_minutes: 清理间隔（分钟）
+        interval_minutes: 清理间隔（分钟），默认15分钟
     """
     import time
     
@@ -237,14 +237,48 @@ def start_periodic_cleanup(interval_minutes: int = 30):
             try:
                 time.sleep(interval_minutes * 60)
                 logger.info("执行定期清理...")
-                cleanup_gradio_cache(max_age_hours=1.0)
-                cleanup_old_jinriki_workspaces(max_age_hours=2.0)
+                cleanup_gradio_cache(max_age_hours=0.5)  # 30分钟以上的缓存
+                cleanup_old_jinriki_workspaces(max_age_hours=1.0)  # 1小时以上的工作空间
             except Exception as e:
                 logger.error(f"定期清理任务异常: {e}")
     
     cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
     cleanup_thread.start()
     logger.info(f"定期清理任务已启动，间隔 {interval_minutes} 分钟")
+
+
+def check_disk_space(min_mb: int = 100) -> Tuple[bool, str]:
+    """
+    检查磁盘空间是否充足
+    
+    参数:
+        min_mb: 最小可用空间（MB）
+    
+    返回:
+        (是否充足, 消息)
+    """
+    try:
+        import shutil
+        total, used, free = shutil.disk_usage("/tmp")
+        free_mb = free / (1024 * 1024)
+        
+        if free_mb < min_mb:
+            # 尝试清理
+            logger.warning(f"磁盘空间不足 ({free_mb:.0f} MB)，尝试清理...")
+            cleanup_gradio_cache(max_age_hours=0)  # 清理所有缓存
+            cleanup_old_jinriki_workspaces(max_age_hours=0)  # 清理所有工作空间
+            
+            # 重新检查
+            total, used, free = shutil.disk_usage("/tmp")
+            free_mb = free / (1024 * 1024)
+            
+            if free_mb < min_mb:
+                return False, f"磁盘空间不足，仅剩 {free_mb:.0f} MB，请稍后重试"
+        
+        return True, f"可用空间: {free_mb:.0f} MB"
+    except Exception as e:
+        logger.warning(f"检查磁盘空间失败: {e}")
+        return True, "无法检查磁盘空间"  # 无法检查时允许继续
 
 
 def cleanup_workspace(workspace: str):
@@ -458,6 +492,12 @@ def process_make_voicebank(
     def log(msg):
         logs.append(msg)
         logger.info(msg)
+    
+    # 检查磁盘空间
+    space_ok, space_msg = check_disk_space(min_mb=200)
+    if not space_ok:
+        decrement_concurrency()
+        return f"❌ {space_msg}", "", None, None
     
     try:
         # 导入依赖（放在 try 块内以捕获导入错误）
@@ -786,6 +826,12 @@ def process_export_voicebank(
         logs.append(msg)
         logger.info(msg)
     
+    # 检查磁盘空间
+    space_ok, space_msg = check_disk_space(min_mb=100)
+    if not space_ok:
+        decrement_concurrency()
+        return f"❌ {space_msg}", "", None
+    
     # 验证输入
     valid, msg, source_name = validate_voicebank_zip(zip_file)
     if not valid:
@@ -1007,6 +1053,12 @@ def process_mfa_realign(
     def log(msg):
         logs.append(msg)
         logger.info(msg)
+    
+    # 检查磁盘空间
+    space_ok, space_msg = check_disk_space(min_mb=100)
+    if not space_ok:
+        decrement_concurrency()
+        return f"❌ {space_msg}", "", None
     
     # 验证输入
     if not zip_file:

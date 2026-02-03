@@ -49,6 +49,69 @@ MODELS_DIR = None  # 延迟初始化
 MFA_DIR = None
 
 
+def cleanup_temp_files():
+    """
+    启动时清理临时文件，释放磁盘空间
+    
+    清理目标：
+    - /tmp/gradio/* (Gradio 上传缓存)
+    - /tmp/jinriki_* (本应用的工作空间)
+    - /tmp/mfa_* (MFA 临时文件)
+    """
+    import shutil
+    import time
+    
+    logger.info("清理临时文件...")
+    
+    cleaned_size = 0
+    cleaned_count = 0
+    
+    # 清理 Gradio 缓存
+    gradio_tmp = Path("/tmp/gradio")
+    if gradio_tmp.exists():
+        try:
+            for item in gradio_tmp.iterdir():
+                try:
+                    if item.is_dir():
+                        size = sum(f.stat().st_size for f in item.rglob('*') if f.is_file())
+                        shutil.rmtree(item)
+                    else:
+                        size = item.stat().st_size
+                        item.unlink()
+                    cleaned_size += size
+                    cleaned_count += 1
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"清理 Gradio 缓存失败: {e}")
+    
+    # 清理 jinriki 工作空间
+    tmp_dir = Path("/tmp")
+    if tmp_dir.exists():
+        try:
+            for item in tmp_dir.iterdir():
+                if item.name.startswith("jinriki_") or item.name.startswith("mfa_"):
+                    try:
+                        if item.is_dir():
+                            size = sum(f.stat().st_size for f in item.rglob('*') if f.is_file())
+                            shutil.rmtree(item)
+                        else:
+                            size = item.stat().st_size
+                            item.unlink()
+                        cleaned_size += size
+                        cleaned_count += 1
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"清理工作空间失败: {e}")
+    
+    if cleaned_count > 0:
+        size_mb = cleaned_size / (1024 * 1024)
+        logger.info(f"已清理 {cleaned_count} 个临时文件/目录，释放 {size_mb:.1f} MB")
+    else:
+        logger.info("无需清理临时文件")
+
+
 def ensure_ffmpeg():
     """确保 ffmpeg 已安装（用于音频格式转换，支持 m4a 等格式）"""
     import shutil
@@ -100,6 +163,10 @@ def setup_environment():
         os.environ.get("GRADIO_SERVER_NAME"), # 通用 Gradio 云端
         Path("/home/studio_service").exists(), # 魔搭创空间特征目录
     ])
+    
+    # 云端环境启动时清理临时文件，释放磁盘空间
+    if is_cloud:
+        cleanup_temp_files()
     
     # 确保 ffmpeg 已安装（支持 m4a 等音频格式）
     if is_cloud or platform.system() != "Windows":
