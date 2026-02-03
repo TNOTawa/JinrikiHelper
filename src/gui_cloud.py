@@ -60,9 +60,17 @@ def safe_gradio_handler(func):
     Gradio 处理函数的安全包装器
     
     捕获所有异常并返回友好的错误信息，避免 Gradio 显示默认的"错误"状态
+    同时确保异常时释放并发计数，防止计数滞留
     """
     import functools
     import traceback
+    
+    # 需要管理并发计数的函数列表
+    CONCURRENCY_MANAGED_FUNCS = {
+        'process_make_voicebank',
+        'process_export_voicebank', 
+        'process_mfa_realign'
+    }
     
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -73,11 +81,15 @@ def safe_gradio_handler(func):
             error_trace = traceback.format_exc()
             logger.error(f"处理函数 {func.__name__} 发生异常:\n{error_trace}")
             
-            # 根据函数返回值数量返回错误信息
-            # 检查函数的类型注解来确定返回值数量
-            annotations = getattr(func, '__annotations__', {})
-            return_type = annotations.get('return', None)
+            # 如果是并发管理的函数，确保释放并发计数
+            # 注意：函数内部可能已经调用了 decrement_concurrency()，
+            # 但如果异常发生在 increment 之后、decrement 之前，这里需要补救
+            # decrement_concurrency() 内部有 max(0, ...) 保护，不会变成负数
+            if func.__name__ in CONCURRENCY_MANAGED_FUNCS:
+                decrement_concurrency()
+                logger.info(f"异常处理：已释放 {func.__name__} 的并发计数")
             
+            # 根据函数返回值数量返回错误信息
             error_msg = f"❌ 系统错误: {str(e)}"
             error_detail = f"异常类型: {type(e).__name__}\n详情: {str(e)}"
             
@@ -129,6 +141,110 @@ def create_temp_workspace() -> str:
     workspace = os.path.join(CloudConfig.TEMP_BASE, f"jinriki_{workspace_id}")
     os.makedirs(workspace, exist_ok=True)
     return workspace
+
+
+def cleanup_gradio_cache(max_age_hours: float = 1.0):
+    """
+    清理 Gradio 临时文件缓存
+    
+    参数:
+        max_age_hours: 文件最大保留时间（小时），超过此时间的文件将被删除
+    """
+    import time
+    
+    gradio_tmp_dir = os.path.join(tempfile.gettempdir(), "gradio")
+    if not os.path.exists(gradio_tmp_dir):
+        return
+    
+    current_time = time.time()
+    max_age_seconds = max_age_hours * 3600
+    cleaned_count = 0
+    cleaned_size = 0
+    
+    try:
+        for root, dirs, files in os.walk(gradio_tmp_dir, topdown=False):
+            for name in files:
+                file_path = os.path.join(root, name)
+                try:
+                    file_age = current_time - os.path.getmtime(file_path)
+                    if file_age > max_age_seconds:
+                        file_size = os.path.getsize(file_path)
+                        os.remove(file_path)
+                        cleaned_count += 1
+                        cleaned_size += file_size
+                except Exception:
+                    pass
+            
+            # 删除空目录
+            for name in dirs:
+                dir_path = os.path.join(root, name)
+                try:
+                    if not os.listdir(dir_path):
+                        os.rmdir(dir_path)
+                except Exception:
+                    pass
+        
+        if cleaned_count > 0:
+            size_mb = cleaned_size / (1024 * 1024)
+            logger.info(f"Gradio 缓存清理: 删除 {cleaned_count} 个文件, 释放 {size_mb:.1f} MB")
+    except Exception as e:
+        logger.warning(f"Gradio 缓存清理失败: {e}")
+
+
+def cleanup_old_jinriki_workspaces(max_age_hours: float = 2.0):
+    """
+    清理旧的 jinriki 工作空间
+    
+    参数:
+        max_age_hours: 工作空间最大保留时间（小时）
+    """
+    import time
+    
+    current_time = time.time()
+    max_age_seconds = max_age_hours * 3600
+    cleaned_count = 0
+    
+    try:
+        for item in os.listdir(CloudConfig.TEMP_BASE):
+            if item.startswith("jinriki_"):
+                workspace_path = os.path.join(CloudConfig.TEMP_BASE, item)
+                if os.path.isdir(workspace_path):
+                    try:
+                        dir_age = current_time - os.path.getmtime(workspace_path)
+                        if dir_age > max_age_seconds:
+                            shutil.rmtree(workspace_path)
+                            cleaned_count += 1
+                    except Exception:
+                        pass
+        
+        if cleaned_count > 0:
+            logger.info(f"工作空间清理: 删除 {cleaned_count} 个旧工作空间")
+    except Exception as e:
+        logger.warning(f"工作空间清理失败: {e}")
+
+
+def start_periodic_cleanup(interval_minutes: int = 30):
+    """
+    启动定期清理任务
+    
+    参数:
+        interval_minutes: 清理间隔（分钟）
+    """
+    import time
+    
+    def cleanup_task():
+        while True:
+            try:
+                time.sleep(interval_minutes * 60)
+                logger.info("执行定期清理...")
+                cleanup_gradio_cache(max_age_hours=1.0)
+                cleanup_old_jinriki_workspaces(max_age_hours=2.0)
+            except Exception as e:
+                logger.error(f"定期清理任务异常: {e}")
+    
+    cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
+    cleanup_thread.start()
+    logger.info(f"定期清理任务已启动，间隔 {interval_minutes} 分钟")
 
 
 def cleanup_workspace(workspace: str):
@@ -1708,6 +1824,14 @@ def create_cloud_ui():
 
 def main():
     """云端入口"""
+    # 启动时执行一次清理
+    logger.info("启动时执行缓存清理...")
+    cleanup_gradio_cache(max_age_hours=0.5)  # 清理超过30分钟的缓存
+    cleanup_old_jinriki_workspaces(max_age_hours=1.0)  # 清理超过1小时的工作空间
+    
+    # 启动定期清理任务
+    start_periodic_cleanup(interval_minutes=30)
+    
     app = create_cloud_ui()
     # 启用队列，魔搭CPU按需分配，无需设置并发上限
     app.queue()
