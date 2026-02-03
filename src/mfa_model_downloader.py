@@ -3,6 +3,7 @@
 MFA 模型下载模块
 支持下载中文和日文的声学模型及字典
 包含 SHA256 哈希校验，确保文件完整性
+支持 GitHub 代理镜像（云端环境）
 """
 
 import os
@@ -11,13 +12,21 @@ import logging
 import urllib.request
 import urllib.error
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, List
 
 logger = logging.getLogger(__name__)
 
 # 模型下载基础 URL
 GITHUB_RELEASE_BASE = "https://github.com/MontrealCorpusTools/mfa-models/releases/download"
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/MontrealCorpusTools/mfa-models/main"
+
+# GitHub 代理镜像列表（云端环境使用）
+# 格式: 代理前缀 + 原始 GitHub URL
+GITHUB_PROXIES = [
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+    "",  # 最后尝试直连
+]
 
 # 支持的语言配置
 # 格式: {语言代码: {名称, 声学模型信息, 字典信息}}
@@ -159,16 +168,36 @@ def _verify_file_integrity(
     return True, "文件完整"
 
 
+def _is_cloud_environment() -> bool:
+    """检测是否在云端环境运行"""
+    return any([
+        os.environ.get("SPACE_ID"),           # Hugging Face Spaces
+        os.environ.get("MODELSCOPE_SPACE"),   # 魔塔社区
+        os.environ.get("GRADIO_SERVER_NAME"), # 通用 Gradio 云端
+        Path("/home/studio_service").exists(), # 魔搭创空间特征目录
+    ])
+
+
+def _get_proxy_urls(original_url: str) -> List[str]:
+    """
+    获取带代理的 URL 列表
+    云端环境返回多个代理 URL，本地环境只返回原始 URL
+    """
+    if _is_cloud_environment():
+        return [f"{proxy}{original_url}" for proxy in GITHUB_PROXIES]
+    return [original_url]
+
+
 def _download_file(
     url: str,
     dest_path: str,
     progress_callback: Optional[Callable[[str], None]] = None
 ) -> bool:
     """
-    下载文件
+    下载文件（支持代理镜像自动切换）
     
     参数:
-        url: 下载地址
+        url: 下载地址（原始 GitHub URL）
         dest_path: 保存路径
         progress_callback: 进度回调
     
@@ -180,65 +209,73 @@ def _download_file(
         if progress_callback:
             progress_callback(msg)
     
-    try:
-        log(f"正在下载: {url}")
-        
-        # 创建目录
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        
-        # 下载到临时文件，完成后再重命名
-        temp_path = dest_path + ".downloading"
-        
-        # 下载文件
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        
-        with urllib.request.urlopen(req, timeout=120) as response:
-            total_size = response.headers.get("Content-Length")
-            if total_size:
-                total_size = int(total_size)
-                log(f"文件大小: {total_size / 1024 / 1024:.1f} MB")
+    # 获取所有可用的 URL（包括代理）
+    urls = _get_proxy_urls(url)
+    
+    for try_url in urls:
+        try:
+            log(f"正在下载: {try_url}")
             
-            # 分块下载
-            block_size = 8192
-            downloaded = 0
+            # 创建目录
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             
-            with open(temp_path, "wb") as f:
-                while True:
-                    chunk = response.read(block_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    
-                    if total_size and downloaded % (block_size * 100) == 0:
-                        percent = downloaded / total_size * 100
-                        log(f"下载进度: {percent:.1f}%")
+            # 下载到临时文件，完成后再重命名
+            temp_path = dest_path + ".downloading"
+            
+            # 下载文件
+            req = urllib.request.Request(try_url, headers={"User-Agent": "Mozilla/5.0"})
+            
+            with urllib.request.urlopen(req, timeout=180) as response:
+                total_size = response.headers.get("Content-Length")
+                if total_size:
+                    total_size = int(total_size)
+                    log(f"文件大小: {total_size / 1024 / 1024:.1f} MB")
+                
+                # 分块下载
+                block_size = 8192
+                downloaded = 0
+                
+                with open(temp_path, "wb") as f:
+                    while True:
+                        chunk = response.read(block_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        if total_size and downloaded % (block_size * 100) == 0:
+                            percent = downloaded / total_size * 100
+                            log(f"下载进度: {percent:.1f}%")
+            
+            # 下载完成，重命名
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+            os.rename(temp_path, dest_path)
+            
+            log(f"下载完成: {dest_path}")
+            return True
+            
+        except urllib.error.HTTPError as e:
+            log(f"HTTP 错误: {e.code} - {e.reason}")
+        except urllib.error.URLError as e:
+            log(f"网络错误: {e.reason}")
+        except Exception as e:
+            log(f"下载失败: {e}")
+        finally:
+            # 清理临时文件
+            temp_path = dest_path + ".downloading"
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
         
-        # 下载完成，重命名
-        if os.path.exists(dest_path):
-            os.remove(dest_path)
-        os.rename(temp_path, dest_path)
-        
-        log(f"下载完成: {dest_path}")
-        return True
-        
-    except urllib.error.HTTPError as e:
-        log(f"HTTP 错误: {e.code} - {e.reason}")
-        return False
-    except urllib.error.URLError as e:
-        log(f"网络错误: {e.reason}")
-        return False
-    except Exception as e:
-        log(f"下载失败: {e}")
-        return False
-    finally:
-        # 清理临时文件
-        temp_path = dest_path + ".downloading"
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except:
-                pass
+        # 当前 URL 失败，尝试下一个
+        if try_url != urls[-1]:
+            log("尝试下一个镜像...")
+    
+    log("所有镜像均下载失败")
+    return False
 
 
 
