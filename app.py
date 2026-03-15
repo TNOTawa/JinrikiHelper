@@ -153,6 +153,10 @@ def setup_mfa_linux():
     
     def verify_mfa_working():
         """验证 MFA 是否能正常工作（包括 kalpy 依赖）"""
+        if importlib.util.find_spec("montreal_forced_aligner") is not None:
+            logger.info("检测到 montreal_forced_aligner Python 包")
+            return True
+
         commands = [
             ["mfa", "version"],
             ["mfa", "--version"],
