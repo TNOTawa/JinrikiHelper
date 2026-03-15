@@ -9,6 +9,7 @@ import sys
 import subprocess
 import platform
 import logging
+import time
 from pathlib import Path
 
 logging.basicConfig(
@@ -158,10 +159,35 @@ def setup_mfa_linux():
     
     logger.info("MFA 不可用，尝试使用 micromamba 安装...")
     
-    # micromamba 安装路径
-    mamba_root = Path("/tmp/micromamba")
+    # micromamba 安装路径（按进程隔离，避免并发启动导致 Text file busy）
+    mamba_root = Path(f"/tmp/micromamba-{os.getpid()}")
     mamba_bin = mamba_root / "bin" / "micromamba"
     mfa_env = mamba_root / "envs" / "mfa"
+
+    def run_mamba(args, env, timeout, check=True):
+        """执行 micromamba，遇到 ETXTBSY 时重试"""
+        last_error = None
+        for i in range(3):
+            try:
+                return subprocess.run(
+                    [str(mamba_bin)] + args,
+                    env=env,
+                    check=check,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            except OSError as e:
+                # Linux ETXTBSY = 26: 可执行文件正在被写入，短暂等待后重试
+                if getattr(e, "errno", None) == 26:
+                    last_error = e
+                    wait_sec = 2 + i * 2
+                    logger.warning(f"micromamba 文件繁忙，{wait_sec}s 后重试 ({i + 1}/3)")
+                    time.sleep(wait_sec)
+                    continue
+                raise
+        if last_error:
+            raise last_error
 
     def ensure_micromamba_downloaded() -> None:
         """下载 micromamba，支持多种方式重试，降低云端网络抖动影响"""
@@ -256,21 +282,21 @@ def setup_mfa_linux():
             env["MAMBA_ROOT_PREFIX"] = str(mamba_root)
             
             # 创建环境并安装 MFA（指定 Python 3.11）
-            subprocess.run([
-                str(mamba_bin), "create", "-n", "mfa",
+            run_mamba([
+                "create", "-n", "mfa",
                 "-c", "conda-forge",
                 "python=3.11",
                 "montreal-forced-aligner",
                 "-y"
-            ], env=env, check=True, capture_output=True, text=True, timeout=1800)
+            ], env=env, check=True, timeout=1800)
             
             # 更新确保使用 CPU 版本的 kaldi
-            subprocess.run([
-                str(mamba_bin), "install", "-n", "mfa",
+            run_mamba([
+                "install", "-n", "mfa",
                 "-c", "conda-forge",
                 "kalpy", "kaldi=*=cpu*",
                 "-y"
-            ], env=env, capture_output=True, text=True, timeout=900)
+            ], env=env, timeout=900)
             
             logger.info("MFA 安装完成")
         
