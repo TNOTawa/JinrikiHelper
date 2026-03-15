@@ -23,28 +23,49 @@ logger = logging.getLogger(__name__)
 
 # 中文辅音（MFA 输出的 IPA 符号）
 CHINESE_CONSONANTS = {
-    'p', 'pʰ', 'pʲ', 'b', 'm', 'f',
-    't', 'tʰ', 'd', 'n', 'l',
-    'k', 'kʰ', 'ɡ', 'g', 'ŋ', 'x', 'h',
+    # 双唇音
+    'p', 'pʰ', 'pʲ', 'pʷ', 'b', 'm', 'f',
+    # 齿龈音
+    't', 'tʰ', 'tʲ', 'd', 'n', 'l',
+    # 软腭音
+    'k', 'kʰ', 'kʷ', 'ɡ', 'g', 'ŋ', 'x', 'h',
+    # 齿龈-硬腭音（j, q, x）
     'tɕ', 'tɕʰ', 'dʑ', 'ɕ', 'ʑ',
+    # 齿龈塞擦音（z, c, s）
     'ts', 'tsʰ', 'dz', 's', 'z',
+    # 卷舌音（zh, ch, sh, r）
     'ʈʂ', 'ʈʂʰ', 'ɖʐ', 'ʂ', 'ʐ',
+    # 鼻音和近音
     'ɲ', 'j', 'w', 'ɥ',
-    'ʔ',  # 喉塞音
+    # 喉塞音
+    'ʔ',
 }
 
 # 中文元音（可能带声调标记）
+# 注意：MFA 输出的元音通常是单个音素，复合韵母会被拆分成多个音素
 CHINESE_VOWELS = {
+    # 基本单元音
     'a', 'o', 'e', 'i', 'u', 'y', 'ü',
     'ə', 'ɛ', 'ɔ', 'ɤ', 'ɨ', 'ʅ', 'ʉ',
-    'ai', 'ei', 'ao', 'ou',
-    'ia', 'ie', 'iu', 'iao', 'iou',
-    'ua', 'uo', 'ui', 'uai', 'uei',
-    'üe', 'üan', 'ün',
-    'an', 'en', 'in', 'un', 'ün',
-    'ang', 'eng', 'ing', 'ong',
-    'aw', 'ej', 'ow',  # MFA 输出格式
-    'z̩',  # 舌尖元音
+    # MFA 输出的特殊格式
+    'aw', 'ej', 'ow',  # 双元音的 MFA 表示（ai, ei, ou）
+    # 舌尖元音（zi, ci, si, zhi, chi, shi, ri）
+    'z̩', 'ʐ̩',
+    # 卷舌近音（er）
+    'ɻ',
+    # 儿化音
+    'ɚ',
+}
+
+# 中文介音（声母和韵母之间的过渡音）
+CHINESE_MEDIALS = {
+    'j', 'w', 'ɥ',  # i, u, ü 介音
+}
+
+# 中文韵尾（鼻音和元音韵尾）
+CHINESE_CODAS = {
+    'n', 'ŋ',  # 鼻音韵尾
+    'i', 'u',  # 元音韵尾（在复韵母中）
 }
 
 # 日语辅音
@@ -86,6 +107,20 @@ FUZZY_VOWEL_GROUPS = [
     ('in', 'ing'),       # 前鼻/后鼻
     ('ian', 'iang'),     # 前鼻/后鼻
     ('uan', 'uang'),     # 前鼻/后鼻
+    # i 行韵母近似组（带鼻音韵尾的可以用不带鼻音韵尾的替代）
+    ('ia', 'ian'),       # ia ←→ ian（如 xia ←→ xian）
+    ('ie', 'ian'),       # ie ←→ ian（如 jie ←→ jian）
+    ('iao', 'ian'),      # iao ←→ ian（如 qiao ←→ qian）
+    ('iu', 'in'),        # iu ←→ in（如 liu ←→ lin）
+    # u 行韵母近似组
+    ('ua', 'uan'),       # ua ←→ uan（如 kua ←→ kuan）
+    ('uo', 'un'),        # uo ←→ un（如 duo ←→ dun）
+    ('ui', 'un'),        # ui ←→ un（如 dui ←→ dun）
+    ('uai', 'uan'),      # uai ←→ uan（如 kuai ←→ kuan）
+    # 单元音与复韵母近似组
+    ('a', 'ai', 'ao', 'an'),  # a 系列
+    ('o', 'ou', 'ong'),       # o 系列
+    ('e', 'ei', 'en'),        # e 系列
 ]
 
 
@@ -105,11 +140,24 @@ def is_vowel(phone: str, language: str) -> bool:
     base_phone = _strip_tone(phone)
     
     if language in ('chinese', 'zh', 'mandarin'):
+        # 直接匹配
         if base_phone in CHINESE_VOWELS:
             return True
-        for v in ['a', 'o', 'e', 'i', 'u', 'y', 'ə', 'ɛ', 'ɔ', 'ɤ', 'ɨ', 'ʅ', 'ʉ']:
+        
+        # 检查是否以元音字符开头（处理复合元音）
+        vowel_starts = ['a', 'o', 'e', 'i', 'u', 'y', 'ə', 'ɛ', 'ɔ', 'ɤ', 'ɨ', 'ʅ', 'ʉ', 'ɚ']
+        for v in vowel_starts:
             if base_phone.startswith(v):
                 return True
+        
+        # 检查特殊的舌尖元音（带组合字符）
+        if 'z̩' in base_phone or 'ʐ̩' in base_phone:
+            return True
+        
+        # 检查卷舌近音
+        if 'ɻ' in base_phone:
+            return True
+        
         return False
     elif language in ('japanese', 'ja', 'jp'):
         return base_phone in JAPANESE_VOWELS or base_phone.rstrip('ː') in {'a', 'i', 'ɯ', 'u', 'e', 'o'}
@@ -127,27 +175,150 @@ def _strip_tone(phone: str) -> str:
 
 # ==================== IPA 到别名转换 ====================
 
-# 中文 IPA 到拼音映射
-CHINESE_IPA_TO_PINYIN = {
-    # 辅音
-    'p': 'b', 'pʰ': 'p', 'pʲ': 'p',
+# 中文 IPA 辅音到拼音声母映射
+CHINESE_CONSONANT_TO_PINYIN = {
+    'p': 'b', 'pʰ': 'p', 'pʲ': 'p', 'pʷ': 'b',
     'm': 'm', 'f': 'f',
-    't': 'd', 'tʰ': 't',
+    't': 'd', 'tʰ': 't', 'tʲ': 'd',
     'n': 'n', 'l': 'l',
-    'k': 'g', 'kʰ': 'k',
+    'k': 'g', 'kʰ': 'k', 'kʷ': 'g',
+    'ɡ': 'g', 'g': 'g',
     'x': 'h', 'h': 'h',
     'tɕ': 'j', 'tɕʰ': 'q', 'ɕ': 'x',
     'ts': 'z', 'tsʰ': 'c', 's': 's',
     'ʈʂ': 'zh', 'ʈʂʰ': 'ch', 'ʂ': 'sh', 'ʐ': 'r',
-    'ɲ': 'n', 'ŋ': 'ng',
-    'j': 'y', 'w': 'w', 'ɥ': 'yu',
+    'ɲ': 'n', 'ŋ': '',  # ng 不作为声母
+    'j': '', 'w': '', 'ɥ': '',  # 介音不作为声母
     'ʔ': '',
-    # 元音
+}
+
+# 中文 IPA 元音到拼音韵母映射
+CHINESE_VOWEL_TO_PINYIN = {
+    # 单元音韵母
     'a': 'a', 'o': 'o', 'e': 'e', 'i': 'i', 'u': 'u', 'y': 'v', 'ü': 'v',
-    'ə': 'e', 'ɛ': 'e', 'ɔ': 'o', 'ɤ': 'e',
-    'ai': 'ai', 'ei': 'ei', 'ao': 'ao', 'ou': 'ou',
-    'aw': 'ao', 'ej': 'ei', 'ow': 'ou',
-    'z̩': 'i',
+    'ə': 'e', 'ɛ': 'e', 'ɔ': 'o', 'ɤ': 'e', 'ɨ': 'i',
+    # 复韵母（MFA 可能的 IPA 格式）
+    'aj': 'ai', 'aw': 'ao', 'ej': 'ei', 'ow': 'ou',
+    'ai': 'ai', 'ao': 'ao', 'ei': 'ei', 'ou': 'ou',  # 直接形式
+    # i 行韵母（MFA 可能的组合形式）
+    'ja': 'ia', 'je': 'ie', 'jɛ': 'ie', 'jao': 'iao', 'jow': 'iu', 'ju': 'iu',
+    'ia': 'ia', 'ie': 'ie', 'iao': 'iao', 'iu': 'iu',  # 直接形式
+    # u 行韵母（MFA 可能的组合形式）
+    'wa': 'ua', 'wo': 'uo', 'wɔ': 'uo', 'wej': 'ui', 'waj': 'uai',
+    'ua': 'ua', 'uo': 'uo', 'ui': 'ui', 'uai': 'uai',  # 直接形式
+    # ü 行韵母（MFA 可能的组合形式）
+    'ɥe': 've', 'ɥɛ': 've',
+    've': 've', 'yue': 've',  # 直接形式
+    # 鼻音韵母（MFA 可能的组合形式）
+    'an': 'an', 'en': 'en', 'ang': 'ang', 'eng': 'eng', 'ong': 'ong',
+    'in': 'in', 'ing': 'ing', 'ian': 'ian', 'iang': 'iang', 'iong': 'iong',
+    'uan': 'uan', 'un': 'un', 'uang': 'uang', 'ueng': 'ueng',
+    'van': 'van', 'vn': 'vn',
+    # 舌尖元音
+    'z̩': 'i', 'ʐ̩': 'i', 'ʅ': 'i',
+    # 卷舌音
+    'ɻ': 'er', 'ɚ': 'er',
+}
+
+# 介音+元音组合到韵母的映射
+MEDIAL_VOWEL_TO_FINAL = {
+    # j 介音（i 行韵母）
+    ('j', 'a'): 'ia', ('j', 'e'): 'ie', ('j', 'ɛ'): 'ie',
+    ('j', 'aw'): 'iao', ('j', 'o'): 'io',
+    ('j', 'u'): 'iu', ('j', 'ow'): 'iou',
+    # w 介音（u 行韵母）
+    ('w', 'a'): 'ua', ('w', 'o'): 'uo', ('w', 'ɔ'): 'uo',
+    ('w', 'ej'): 'uei', ('w', 'e'): 'ue',
+    ('w', 'aj'): 'uai', ('w', 'ai'): 'uai',
+    # ɥ 介音（ü 行韵母）
+    ('ɥ', 'e'): 've', ('ɥ', 'ɛ'): 've',
+}
+
+# 介音+元音+韵尾组合到韵母的映射
+MEDIAL_VOWEL_CODA_TO_FINAL = {
+    # j 介音 + 元音 + 韵尾
+    ('j', 'a', 'n'): 'ian', ('j', 'e', 'n'): 'in',
+    ('j', 'a', 'ŋ'): 'iang', ('j', 'o', 'ŋ'): 'iong',
+    # w 介音 + 元音 + 韵尾
+    ('w', 'a', 'n'): 'uan', ('w', 'ə', 'n'): 'uen', ('w', 'e', 'n'): 'uen',
+    ('w', 'a', 'ŋ'): 'uang', ('w', 'ə', 'ŋ'): 'ueng', ('w', 'e', 'ŋ'): 'ueng',
+    # ɥ 介音 + 元音 + 韵尾
+    ('ɥ', 'a', 'n'): 'van', ('ɥ', 'e', 'n'): 'vn',
+}
+
+# 元音+韵尾组合到拼音韵母的映射
+VOWEL_CODA_TO_PINYIN = {
+    # 前鼻音韵母
+    ('a', 'n'): 'an', ('ə', 'n'): 'en', ('e', 'n'): 'en',
+    ('i', 'n'): 'in', ('y', 'n'): 'un', ('u', 'n'): 'un',
+    # 后鼻音韵母
+    ('a', 'ŋ'): 'ang', ('ə', 'ŋ'): 'eng', ('e', 'ŋ'): 'eng',
+    ('i', 'ŋ'): 'ing', ('o', 'ŋ'): 'ong', ('u', 'ŋ'): 'ong',
+    # 复韵母（元音+元音）
+    ('a', 'i'): 'ai', ('e', 'i'): 'ei', ('ej', 'i'): 'ei',
+    ('a', 'u'): 'ao', ('aw', 'u'): 'ao', ('o', 'u'): 'ou', ('ow', 'u'): 'ou',
+    # i 行韵母
+    ('i', 'a'): 'ia', ('i', 'e'): 'ie', ('i', 'ɛ'): 'ie',
+    ('i', 'u'): 'iu',
+    # u 行韵母
+    ('u', 'a'): 'ua', ('u', 'o'): 'uo', ('u', 'ɔ'): 'uo',
+    ('u', 'i'): 'ui', ('u', 'e'): 'ue',
+    # ü 行韵母
+    ('y', 'e'): 've', ('y', 'ɛ'): 've',
+}
+
+# IPA 音节组合到标准拼音的映射表（处理特殊组合规则）
+IPA_SYLLABLE_TO_PINYIN = {
+    # j/q/x + ü 系列（ü 简写为 u）
+    ('tɕ', 'y'): 'ju', ('tɕʰ', 'y'): 'qu', ('ɕ', 'y'): 'xu',
+    ('tɕ', 'ɥ'): 'ju', ('tɕʰ', 'ɥ'): 'qu', ('ɕ', 'ɥ'): 'xu',
+    ('tɕ', 'yɛ'): 'jue', ('tɕʰ', 'yɛ'): 'que', ('ɕ', 'yɛ'): 'xue',
+    ('tɕ', 'yan'): 'juan', ('tɕʰ', 'yan'): 'quan', ('ɕ', 'yan'): 'xuan',
+    ('tɕ', 'yn'): 'jun', ('tɕʰ', 'yn'): 'qun', ('ɕ', 'yn'): 'xun',
+    
+    # 零声母 + i/u/ü 开头的韵母（需要加 y/w）
+    ('', 'i'): 'yi', ('', 'in'): 'yin', ('', 'ing'): 'ying',
+    ('', 'u'): 'wu', ('', 'un'): 'wen', ('', 'ong'): 'weng',
+    ('', 'y'): 'yu', ('', 'yn'): 'yun',
+    
+    # i 行韵母（ia, ie, iao, ian, iang, iong, iu）
+    ('', 'ia'): 'ya', ('', 'iɛ'): 'ye', ('', 'ie'): 'ye',
+    ('', 'iao'): 'yao', ('', 'ian'): 'yan', ('', 'iang'): 'yang',
+    ('', 'iou'): 'you', ('', 'iu'): 'you',
+    ('', 'iong'): 'yong',
+    
+    # u 行韵母（ua, uo, uai, uei, uan, uen, uang, ueng）
+    ('', 'ua'): 'wa', ('', 'uɔ'): 'wo', ('', 'uo'): 'wo',
+    ('', 'uai'): 'wai', ('', 'uei'): 'wei', ('', 'ui'): 'wei',
+    ('', 'uan'): 'wan', ('', 'uen'): 'wen',
+    ('', 'uang'): 'wang', ('', 'ueng'): 'weng',
+    
+    # ü 行韵母（üe, üan, ün）
+    ('', 'yɛ'): 'yue', ('', 'üe'): 'yue',
+    ('', 'yan'): 'yuan', ('', 'üan'): 'yuan',
+    ('', 'yn'): 'yun', ('', 'ün'): 'yun',
+    
+    # zh/ch/sh/r + i 实际是舌尖元音
+    ('ʈʂ', 'ʐ̩'): 'zhi', ('ʈʂʰ', 'ʐ̩'): 'chi', ('ʂ', 'ʐ̩'): 'shi', ('ʐ', 'ʐ̩'): 'ri',
+    ('ʈʂ', 'z̩'): 'zhi', ('ʈʂʰ', 'z̩'): 'chi', ('ʂ', 'z̩'): 'shi', ('ʐ', 'z̩'): 'ri',
+    ('ʈʂ', 'ʅ'): 'zhi', ('ʈʂʰ', 'ʅ'): 'chi', ('ʂ', 'ʅ'): 'shi', ('ʐ', 'ʅ'): 'ri',
+    
+    # z/c/s + i 实际是舌尖元音
+    ('ts', 'z̩'): 'zi', ('tsʰ', 'z̩'): 'ci', ('s', 'z̩'): 'si',
+    ('ts', 'ʅ'): 'zi', ('tsʰ', 'ʅ'): 'ci', ('s', 'ʅ'): 'si',
+    
+    # n/l + ü 系列（保持 ü）
+    ('n', 'y'): 'nv', ('l', 'y'): 'lv',
+    ('n', 'yɛ'): 'nve', ('l', 'yɛ'): 'lve',
+    
+    # 其他特殊组合
+    ('ʔ', 'a'): 'a', ('ʔ', 'o'): 'o', ('ʔ', 'e'): 'e',
+    ('ʔ', 'ai'): 'ai', ('ʔ', 'ei'): 'ei', ('ʔ', 'ao'): 'ao', ('ʔ', 'ou'): 'ou',
+    ('ʔ', 'an'): 'an', ('ʔ', 'en'): 'en', ('ʔ', 'ang'): 'ang', ('ʔ', 'eng'): 'eng',
+    ('ʔ', 'ej'): 'ei', ('ʔ', 'aw'): 'ao', ('ʔ', 'ow'): 'ou',
+    
+    # 儿化音
+    ('', 'ɻ'): 'er', ('', 'ɚ'): 'er',
 }
 
 # 日语 IPA 到罗马音映射
@@ -214,17 +385,13 @@ ROMAJI_TO_HIRAGANA = {
 
 
 def ipa_to_alias(consonant: Optional[str], vowel: Optional[str], language: str, use_hiragana: bool = False) -> Optional[str]:
-    """将 IPA 音素转换为别名"""
+    """将 IPA 音素转换为别名（标准拼音或罗马音）"""
     c_base = _strip_tone(consonant) if consonant else ''
     v_base = _strip_tone(vowel) if vowel else ''
     
     if language in ('chinese', 'zh', 'mandarin'):
-        c_alias = CHINESE_IPA_TO_PINYIN.get(c_base, c_base)
-        v_alias = CHINESE_IPA_TO_PINYIN.get(v_base, v_base)
-        alias = (c_alias or '') + (v_alias or '')
-        # 清理非 ASCII 字符
-        alias = ''.join(c for c in alias if c.isascii() and (c.isalnum() or c == '_'))
-        return alias.lower() if alias else None
+        # 中文：使用完整的音节转换规则
+        return _ipa_to_pinyin(c_base, v_base)
     else:
         # 日语
         c_alias = JAPANESE_IPA_TO_ROMAJI.get(c_base, c_base)
@@ -243,12 +410,108 @@ def ipa_to_alias(consonant: Optional[str], vowel: Optional[str], language: str, 
         return romaji
 
 
+def _ipa_to_pinyin(consonant: str, vowel: str) -> Optional[str]:
+    """
+    将 IPA 辅音+韵母转换为标准汉语拼音
+    
+    参数:
+        consonant: IPA 辅音（已去除声调），可以是空字符串表示零声母
+        vowel: IPA 韵母（已去除声调），可能是单个元音或元音+韵尾的组合
+    
+    返回:
+        标准拼音，如果无法转换则返回 None
+    """
+    # 1. 先查找特殊组合映射
+    syllable_key = (consonant, vowel)
+    if syllable_key in IPA_SYLLABLE_TO_PINYIN:
+        return IPA_SYLLABLE_TO_PINYIN[syllable_key]
+    
+    # 2. 获取声母的拼音
+    c_pinyin = ''
+    if consonant and consonant != 'ʔ':
+        if consonant in CHINESE_CONSONANT_TO_PINYIN:
+            c_pinyin = CHINESE_CONSONANT_TO_PINYIN[consonant]
+        else:
+            # 未知辅音，无法转换
+            return None
+    
+    # 3. 获取韵母的拼音
+    # 韵母可能是单个元音，也可能是元音+韵尾的组合字符串
+    v_pinyin = ''
+    if vowel:
+        # 直接查找完整韵母
+        if vowel in CHINESE_VOWEL_TO_PINYIN:
+            v_pinyin = CHINESE_VOWEL_TO_PINYIN[vowel]
+        else:
+            # 韵母可能是组合形式，无法直接映射
+            # 这种情况应该在 _syllable_to_pinyin 中处理
+            return None
+    
+    if not v_pinyin:
+        return None
+    
+    # 4. 处理零声母（无声母或喉塞音）
+    if not c_pinyin:
+        # 零声母需要根据韵母添加 y/w/yu
+        if v_pinyin == 'i':
+            return 'yi'
+        elif v_pinyin in ('in', 'ing'):
+            return 'y' + v_pinyin
+        elif v_pinyin.startswith('i') and len(v_pinyin) > 1:
+            # ia->ya, ie->ye, iao->yao, ian->yan, iang->yang, iu->you, iong->yong
+            return 'y' + v_pinyin[1:]
+        elif v_pinyin == 'u':
+            return 'wu'
+        elif v_pinyin == 'un':
+            return 'wen'
+        elif v_pinyin == 'ong':
+            return 'weng'
+        elif v_pinyin.startswith('u') and len(v_pinyin) > 1:
+            # ua->wa, uo->wo, uai->wai, ui->wei, uan->wan, uang->wang
+            return 'w' + v_pinyin[1:]
+        elif v_pinyin == 'v':
+            # ü 单独出现写作 yu
+            return 'yu'
+        elif v_pinyin.startswith('v') and len(v_pinyin) > 1:
+            # ve->yue, van->yuan, vn->yun
+            return 'yu' + v_pinyin[1:]
+        else:
+            # a, o, e, ai, ei, ao, ou, an, en, ang, eng, er 等
+            return v_pinyin
+    
+    # 5. 有声母的情况
+    # 5.1 j/q/x + ü 系列：ü 写作 u
+    if c_pinyin in ('j', 'q', 'x'):
+        if v_pinyin == 'v':
+            return c_pinyin + 'u'
+        elif v_pinyin.startswith('v'):
+            # jve->jue, jvan->juan, jvn->jun
+            return c_pinyin + 'u' + v_pinyin[1:]
+        else:
+            return c_pinyin + v_pinyin
+    
+    # 5.2 n/l + ü 系列：保持 v（表示 ü）
+    elif c_pinyin in ('n', 'l'):
+        # 只有 n/l 才需要区分 u 和 ü
+        return c_pinyin + v_pinyin
+    
+    # 5.3 其他声母 + v：v 改写为 u（因为不会产生歧义）
+    elif v_pinyin == 'v':
+        return c_pinyin + 'u'
+    elif v_pinyin.startswith('v'):
+        return c_pinyin + 'u' + v_pinyin[1:]
+    
+    # 5.4 普通组合
+    else:
+        return c_pinyin + v_pinyin
+
+
 class UTAUOtoExportPlugin(ExportPlugin):
     """UTAU oto.ini 导出插件"""
     
     name = "UTAU oto.ini 导出"
     description = "从 TextGrid 生成 UTAU 音源配置文件，一个 wav 可包含多条配置"
-    version = "1.1.0"
+    version = "1.2.0"
     author = "内置"
     
     def get_options(self) -> List[PluginOption]:
@@ -348,6 +611,42 @@ class UTAUOtoExportPlugin(ExportPlugin):
                 default="",
                 description="character.txt 中的角色名，留空则使用音源名称"
             ),
+            PluginOption(
+                key="cvvc_mode",
+                label="CVVC 模式",
+                option_type=OptionType.SWITCH,
+                default=False,
+                description="启用 CVVC 模式，额外生成 VC 部（元音到辅音过渡）条目"
+            ),
+            PluginOption(
+                key="vc_alias_separator",
+                label="VC 别名分隔符",
+                option_type=OptionType.COMBO,
+                default=" ",
+                choices=[" ", "_", "-"],
+                description="VC 部别名中元音和辅音之间的分隔符",
+                visible_when={"cvvc_mode": True}
+            ),
+            PluginOption(
+                key="vc_offset_ratio",
+                label="VC 偏移比例",
+                option_type=OptionType.NUMBER,
+                default=0.5,
+                min_value=0.3,
+                max_value=0.8,
+                description="VC 部开始位置 = 元音结束位置 - 元音时长 × 此比例",
+                visible_when={"cvvc_mode": True}
+            ),
+            PluginOption(
+                key="vc_overlap_ratio",
+                label="VC Overlap 比例",
+                option_type=OptionType.NUMBER,
+                default=0.5,
+                min_value=0.3,
+                max_value=0.8,
+                description="VC 部的 Overlap = Preutterance × 此比例",
+                visible_when={"cvvc_mode": True}
+            ),
         ]
     
     def export(
@@ -375,6 +674,12 @@ class UTAUOtoExportPlugin(ExportPlugin):
             fuzzy_phoneme = options.get("fuzzy_phoneme", False)
             use_hiragana = (alias_style == "hiragana") and language in ('japanese', 'ja', 'jp')
             
+            # CVVC 模式选项
+            cvvc_mode = options.get("cvvc_mode", False)
+            vc_separator = options.get("vc_alias_separator", " ")
+            vc_offset_ratio = float(options.get("vc_offset_ratio", 0.5))
+            vc_overlap_ratio = float(options.get("vc_overlap_ratio", 0.5))
+            
             # 使用基类方法解析质量评估维度
             enabled_metrics = self.parse_quality_metrics(quality_metrics)
             
@@ -384,13 +689,20 @@ class UTAUOtoExportPlugin(ExportPlugin):
             os.makedirs(export_dir, exist_ok=True)
             
             # 步骤1: 解析 TextGrid 并生成 oto 条目
-            self._log("【解析 TextGrid 文件】")
+            if cvvc_mode:
+                self._log("【解析 TextGrid 文件】（CVVC 模式）")
+            else:
+                self._log("【解析 TextGrid 文件】")
             oto_entries, wav_files = self._parse_textgrids(
                 paths["slices_dir"],
                 paths["textgrid_dir"],
                 language,
                 use_hiragana,
-                overlap_ratio
+                overlap_ratio,
+                cvvc_mode=cvvc_mode,
+                vc_offset_ratio=vc_offset_ratio,
+                vc_overlap_ratio=vc_overlap_ratio,
+                vc_separator=vc_separator
             )
             
             if not oto_entries:
@@ -466,9 +778,25 @@ class UTAUOtoExportPlugin(ExportPlugin):
         textgrid_dir: str,
         language: str,
         use_hiragana: bool,
-        overlap_ratio: float
+        overlap_ratio: float,
+        cvvc_mode: bool = False,
+        vc_offset_ratio: float = 0.5,
+        vc_overlap_ratio: float = 0.5,
+        vc_separator: str = " "
     ) -> Tuple[List[Dict], set]:
-        """解析 TextGrid 文件，提取音素边界"""
+        """解析 TextGrid 文件，提取音素边界
+        
+        参数:
+            slices_dir: 切片目录
+            textgrid_dir: TextGrid 目录
+            language: 语言
+            use_hiragana: 是否使用平假名
+            overlap_ratio: CV 部 overlap 比例
+            cvvc_mode: 是否启用 CVVC 模式
+            vc_offset_ratio: VC 偏移比例
+            vc_overlap_ratio: VC overlap 比例
+            vc_separator: VC 别名分隔符
+        """
         import textgrid
         import soundfile as sf
         
@@ -522,12 +850,21 @@ class UTAUOtoExportPlugin(ExportPlugin):
             if phones_tier is None:
                 continue
             
-            # 提取音素对，使用 words 层限制配对范围
+            # 提取 CV 对，使用 words 层限制配对范围
             entries = self._extract_cv_pairs(
                 words_tier, phones_tier, wav_name, wav_duration_ms,
                 language, use_hiragana, overlap_ratio
             )
             oto_entries.extend(entries)
+            
+            # 如果启用 CVVC 模式，额外提取 VC 对
+            if cvvc_mode:
+                vc_entries = self._extract_vc_pairs(
+                    words_tier, phones_tier, wav_name, wav_duration_ms,
+                    language, use_hiragana,
+                    vc_offset_ratio, vc_overlap_ratio, vc_separator
+                )
+                oto_entries.extend(vc_entries)
         
         return oto_entries, wav_files
     
@@ -542,8 +879,8 @@ class UTAUOtoExportPlugin(ExportPlugin):
         overlap_ratio: float
     ) -> List[Dict]:
         """
-        从 phones 层提取辅音+元音对
-        使用 words 层限制配对范围，确保辅音和元音属于同一个字
+        从 phones 层提取音节（可能包含辅音+元音+韵尾）
+        使用 words 层限制配对范围，确保音素属于同一个字
         """
         entries = []
         
@@ -584,66 +921,647 @@ class UTAUOtoExportPlugin(ExportPlugin):
             start_ms = interval.minTime * 1000
             end_ms = interval.maxTime * 1000
             
-            if is_consonant(phone, language):
-                consonant = phone
-                consonant_start = start_ms
-                consonant_end = end_ms
-                consonant_time = interval.minTime  # 用于判断所属 word
+            # 中文音节结构：(辅音) + (介音) + 元音 + (韵尾)
+            if language in ('chinese', 'zh', 'mandarin'):
+                syllable_phones = []
+                syllable_start = start_ms
+                syllable_end = end_ms
+                consonant_duration = 0
                 
-                vowel = None
-                vowel_end = end_ms
-                
-                # 检查下一个音素是否是元音，且在同一个 word 内
-                if i + 1 < len(intervals):
-                    next_interval = intervals[i + 1]
-                    next_phone = next_interval.mark.strip()
-                    next_time = next_interval.minTime
+                # 1. 检查是否有声母（辅音）
+                if is_consonant(phone, language):
+                    syllable_phones.append(phone)
+                    consonant_duration = end_ms - start_ms
+                    i += 1
                     
-                    if (next_phone not in SKIP_MARKS and 
-                        is_vowel(next_phone, language) and
-                        same_word(consonant_time, next_time)):
-                        vowel = next_phone
-                        vowel_end = next_interval.maxTime * 1000
-                        i += 1
+                    # 检查下一个音素
+                    if i < len(intervals):
+                        next_interval = intervals[i]
+                        next_phone = next_interval.mark.strip()
+                        
+                        if next_phone not in SKIP_MARKS and same_word(interval.minTime, next_interval.minTime):
+                            phone = next_phone
+                            end_ms = next_interval.maxTime * 1000
+                            syllable_end = end_ms
+                        else:
+                            # 只有辅音，没有元音，跳过
+                            continue
+                    else:
+                        # 只有辅音，没有元音，跳过
+                        continue
                 
-                alias = ipa_to_alias(consonant, vowel, language, use_hiragana)
-                if not alias:
+                # 2. 检查是否有介音（j, w, ɥ）
+                phone_base = _strip_tone(phone)
+                if phone_base in CHINESE_MEDIALS:
+                    syllable_phones.append(phone)
                     i += 1
-                    continue
+                    
+                    # 检查下一个音素（必须是元音）
+                    if i < len(intervals):
+                        next_interval = intervals[i]
+                        next_phone = next_interval.mark.strip()
+                        
+                        if next_phone not in SKIP_MARKS and same_word(interval.minTime, next_interval.minTime):
+                            phone = next_phone
+                            end_ms = next_interval.maxTime * 1000
+                            syllable_end = end_ms
+                        else:
+                            # 只有介音，没有元音，跳过
+                            continue
+                    else:
+                        # 只有介音，没有元音，跳过
+                        continue
                 
-                consonant_duration = consonant_end - consonant_start
-                
-                entry = self._calculate_oto_params(
-                    wav_name=wav_name,
-                    alias=alias,
-                    offset=consonant_start,
-                    consonant_duration=consonant_duration,
-                    segment_end=vowel_end,
-                    wav_duration_ms=wav_duration_ms,
-                    overlap_ratio=overlap_ratio
-                )
-                entries.append(entry)
-                
-            elif is_vowel(phone, language):
-                alias = ipa_to_alias(None, phone, language, use_hiragana)
-                if not alias:
+                # 3. 必须有韵母（元音）
+                if is_vowel(phone, language):
+                    syllable_phones.append(phone)
+                    if not consonant_duration:
+                        # 零声母，辅音时长设为元音前30ms
+                        consonant_duration = min(30, (end_ms - start_ms) * 0.2)
+                    syllable_end = end_ms
                     i += 1
-                    continue
-                
-                entry = self._calculate_oto_params(
-                    wav_name=wav_name,
-                    alias=alias,
-                    offset=start_ms,
-                    consonant_duration=min(30, (end_ms - start_ms) * 0.2),
-                    segment_end=end_ms,
-                    wav_duration_ms=wav_duration_ms,
-                    overlap_ratio=overlap_ratio
-                )
-                entries.append(entry)
+                    
+                    # 4. 检查是否有韵尾（n, ng, i, u）
+                    if i < len(intervals):
+                        next_interval = intervals[i]
+                        next_phone = next_interval.mark.strip()
+                        
+                        if (next_phone not in SKIP_MARKS and
+                            same_word(interval.minTime, next_interval.minTime)):
+                            # 检查是否是韵尾
+                            next_phone_base = _strip_tone(next_phone)
+                            if next_phone_base in CHINESE_CODAS:
+                                syllable_phones.append(next_phone)
+                                syllable_end = next_interval.maxTime * 1000
+                                i += 1
+                    
+                    # 5. 将音节转换为拼音
+                    alias = self._syllable_to_pinyin(syllable_phones, language, use_hiragana)
+                    if alias:
+                        entry = self._calculate_oto_params(
+                            wav_name=wav_name,
+                            alias=alias,
+                            offset=syllable_start,
+                            consonant_duration=consonant_duration,
+                            segment_end=syllable_end,
+                            wav_duration_ms=wav_duration_ms,
+                            overlap_ratio=overlap_ratio
+                        )
+                        entries.append(entry)
+                else:
+                    # 不是元音，跳过
+                    i += 1
             
-            i += 1
+            else:
+                # 日语：简单的 CV 结构
+                if is_consonant(phone, language):
+                    consonant = phone
+                    consonant_start = start_ms
+                    consonant_end = end_ms
+                    consonant_time = interval.minTime
+                    
+                    vowel = None
+                    vowel_end = end_ms
+                    
+                    if i + 1 < len(intervals):
+                        next_interval = intervals[i + 1]
+                        next_phone = next_interval.mark.strip()
+                        next_time = next_interval.minTime
+                        
+                        if (next_phone not in SKIP_MARKS and
+                            is_vowel(next_phone, language) and
+                            same_word(consonant_time, next_time)):
+                            vowel = next_phone
+                            vowel_end = next_interval.maxTime * 1000
+                            i += 1
+                    
+                    alias = ipa_to_alias(consonant, vowel, language, use_hiragana)
+                    if alias:
+                        consonant_duration = consonant_end - consonant_start
+                        entry = self._calculate_oto_params(
+                            wav_name=wav_name,
+                            alias=alias,
+                            offset=consonant_start,
+                            consonant_duration=consonant_duration,
+                            segment_end=vowel_end,
+                            wav_duration_ms=wav_duration_ms,
+                            overlap_ratio=overlap_ratio
+                        )
+                        entries.append(entry)
+                    
+                elif is_vowel(phone, language):
+                    alias = ipa_to_alias(None, phone, language, use_hiragana)
+                    if alias:
+                        entry = self._calculate_oto_params(
+                            wav_name=wav_name,
+                            alias=alias,
+                            offset=start_ms,
+                            consonant_duration=min(30, (end_ms - start_ms) * 0.2),
+                            segment_end=end_ms,
+                            wav_duration_ms=wav_duration_ms,
+                            overlap_ratio=overlap_ratio
+                        )
+                        entries.append(entry)
+                
+                i += 1
         
         return entries
+    
+    def _syllable_to_pinyin(
+        self,
+        phones: List[str],
+        language: str,
+        use_hiragana: bool
+    ) -> Optional[str]:
+        """
+        将音素列表转换为标准汉语拼音（通用方法）
+        
+        采用新的通用转换算法，支持所有标准汉语拼音音节
+        
+        参数:
+            phones: 音素列表（带声调的 IPA 符号）
+            language: 语言
+            use_hiragana: 是否使用平假名（中文忽略此参数）
+        
+        返回:
+            拼音字符串
+        """
+        if not phones:
+            return None
+        
+        # 去除声调
+        phones_base = [_strip_tone(p) for p in phones]
+        
+        # 解析音节结构：(辅音) + (介音) + 元音 + (韵尾)
+        idx = 0
+        c = ''  # 声母
+        m = ''  # 介音
+        v = ''  # 元音
+        cd = ''  # 韵尾
+        
+        # 1. 声母
+        if idx < len(phones_base) and is_consonant(phones_base[idx], language):
+            c = phones_base[idx]
+            idx += 1
+        
+        # 2. 介音
+        if idx < len(phones_base) and phones_base[idx] in CHINESE_MEDIALS:
+            m = phones_base[idx]
+            idx += 1
+        
+        # 3. 元音（必须）
+        if idx < len(phones_base) and is_vowel(phones_base[idx], language):
+            v = phones_base[idx]
+            idx += 1
+        else:
+            # 没有元音，无法形成音节
+            return None
+        
+        # 4. 韵尾
+        if idx < len(phones_base) and phones_base[idx] in CHINESE_CODAS:
+            cd = phones_base[idx]
+            idx += 1
+        
+        # 转换为拼音
+        c_py = CHINESE_CONSONANT_TO_PINYIN.get(c, '')
+        v_py = CHINESE_VOWEL_TO_PINYIN.get(v, v)
+        
+        # 组合韵母
+        final = ''
+        
+        if m == 'j':
+            # i 行韵母
+            if cd == 'n':
+                if v_py == 'a':
+                    final = 'ian'
+                elif v_py == 'e':
+                    final = 'in'  # j + e + n = in (如 xin, yin)
+                else:
+                    final = 'i' + v_py + 'n'
+            elif cd == 'ŋ':
+                if v_py == 'a':
+                    final = 'iang'
+                elif v_py == 'o':
+                    final = 'iong'
+                else:
+                    final = 'i' + v_py + 'ng'
+            elif cd:
+                final = 'i' + v_py + cd
+            else:
+                if v_py == 'a':
+                    final = 'ia'
+                elif v_py == 'e':
+                    final = 'ie'
+                elif v_py == 'ao':
+                    final = 'iao'
+                elif v_py == 'ou':
+                    final = 'iu'
+                else:
+                    final = 'i' + v_py
+        
+        elif m == 'w':
+            # u 行韵母
+            if cd == 'n':
+                if v_py == 'a':
+                    final = 'uan'
+                elif v_py == 'e':
+                    final = 'un'  # w + ə + n = un (如 shun)
+                else:
+                    final = 'u' + v_py + 'n'
+            elif cd == 'ŋ':
+                if v_py == 'a':
+                    final = 'uang'
+                elif v_py == 'e':
+                    final = 'ueng'
+                else:
+                    final = 'u' + v_py + 'ng'
+            elif cd:
+                final = 'u' + v_py + cd
+            else:
+                if v_py == 'a':
+                    final = 'ua'
+                elif v_py == 'o':
+                    final = 'uo'
+                elif v_py == 'ei':
+                    final = 'ui'  # w + ej = ui (如 shui)
+                elif v_py == 'ai':
+                    final = 'uai'
+                else:
+                    final = 'u' + v_py
+        
+        elif m == 'ɥ':
+            # ü 行韵母
+            if cd == 'n':
+                if v_py == 'a':
+                    final = 'van'
+                elif v_py == 'e':
+                    final = 'vn'
+                else:
+                    final = 'v' + v_py + 'n'
+            elif cd:
+                final = 'v' + v_py + cd
+            else:
+                if v_py == 'e':
+                    final = 've'
+                else:
+                    final = 'v' + v_py
+        
+        else:
+            # 无介音
+            if cd == 'n':
+                final = v_py + 'n'
+            elif cd == 'ŋ':
+                final = v_py + 'ng'
+            elif cd:
+                final = v_py + cd
+            else:
+                final = v_py
+        
+        # 组合声母和韵母
+        if not c_py:
+            # 零声母，需要添加 y/w/yu
+            if final.startswith('i'):
+                if final == 'i':
+                    return 'yi'
+                elif final in ('in', 'ing'):
+                    return 'y' + final
+                else:
+                    return 'y' + final[1:]
+            elif final.startswith('u'):
+                if final == 'u':
+                    return 'wu'
+                elif final == 'un':
+                    return 'wen'
+                elif final in ('ueng', 'ong'):
+                    return 'weng'
+                else:
+                    return 'w' + final[1:]
+            elif final.startswith('v'):
+                if final == 'v':
+                    return 'yu'
+                else:
+                    return 'yu' + final[1:]
+            else:
+                return final
+        
+        # 有声母
+        if c_py in ('j', 'q', 'x'):
+            # j/q/x + ü 系列，ü 写作 u
+            if final.startswith('v'):
+                return c_py + 'u' + final[1:]
+            else:
+                return c_py + final
+        elif c_py in ('n', 'l'):
+            # n/l + ü 系列，保持 v
+            return c_py + final
+        else:
+            # 其他声母 + ü，ü 写作 u
+            if final.startswith('v'):
+                return c_py + 'u' + final[1:]
+            else:
+                return c_py + final
+    
+    def _extract_vc_pairs(
+        self,
+        words_tier,
+        phones_tier,
+        wav_name: str,
+        wav_duration_ms: float,
+        language: str,
+        use_hiragana: bool,
+        vc_offset_ratio: float,
+        vc_overlap_ratio: float,
+        vc_separator: str
+    ) -> List[Dict]:
+        """
+        从 phones 层提取元音+辅音对（VC 部）
+        
+        VC 部是当前音节的韵母(V) + 下一个音节的声母(C)
+        用于连接两个相邻音节的过渡部分
+        
+        使用 presamp.ini 中的映射规则来确定韵母和声母的对应关系
+        
+        注意：VC 部的别名始终使用拼音格式，不受 use_hiragana 参数影响
+        
+        参数:
+            words_tier: words 层
+            phones_tier: phones 层
+            wav_name: 音频文件名
+            wav_duration_ms: 音频总时长
+            language: 语言
+            use_hiragana: 是否使用平假名（VC 部忽略此参数，始终用拼音）
+            vc_offset_ratio: VC 偏移比例
+            vc_overlap_ratio: VC overlap 比例
+            vc_separator: VC 别名分隔符
+        
+        返回:
+            VC 条目列表
+        """
+        entries = []
+        
+        if language not in ('chinese', 'zh', 'mandarin'):
+            # 非中文暂不支持 CVVC
+            return entries
+        
+        # 加载 presamp.ini 映射
+        vowel_map, consonant_map = self._load_presamp_mapping()
+        if not vowel_map or not consonant_map:
+            self._log("警告: 无法加载 presamp.ini 映射，跳过 VC 部生成")
+            return entries
+        
+        intervals = list(phones_tier)
+        
+        # 解析所有音节，提取韵母和声母信息
+        syllables = []
+        i = 0
+        
+        while i < len(intervals):
+            interval = intervals[i]
+            phone = interval.mark.strip()
+            
+            if phone in SKIP_MARKS:
+                i += 1
+                continue
+            
+            # 解析一个完整音节：(辅音) + (介音) + 元音 + (韵尾)
+            syllable_phones = []
+            syllable_start = interval.minTime * 1000
+            syllable_end = interval.maxTime * 1000
+            consonant_duration = 0
+            vowel_start = syllable_start
+            vowel_end = syllable_end
+            has_consonant = False
+            
+            # 1. 检查是否有声母（辅音）
+            if is_consonant(phone, language):
+                syllable_phones.append(phone)
+                consonant_duration = interval.maxTime * 1000 - syllable_start
+                has_consonant = True
+                i += 1
+                
+                # 检查下一个音素
+                if i < len(intervals):
+                    next_interval = intervals[i]
+                    next_phone = next_interval.mark.strip()
+                    
+                    if next_phone not in SKIP_MARKS:
+                        phone = next_phone
+                        syllable_end = next_interval.maxTime * 1000
+                        vowel_start = next_interval.minTime * 1000
+                    else:
+                        # 只有辅音，没有元音，跳过
+                        continue
+                else:
+                    # 只有辅音，没有元音，跳过
+                    continue
+            
+            # 2. 检查是否有介音（j, w, ɥ）
+            phone_base = _strip_tone(phone)
+            if phone_base in CHINESE_MEDIALS:
+                syllable_phones.append(phone)
+                i += 1
+                
+                # 检查下一个音素（必须是元音）
+                if i < len(intervals):
+                    next_interval = intervals[i]
+                    next_phone = next_interval.mark.strip()
+                    
+                    if next_phone not in SKIP_MARKS:
+                        phone = next_phone
+                        syllable_end = next_interval.maxTime * 1000
+                    else:
+                        # 只有介音，没有元音，跳过
+                        continue
+                else:
+                    # 只有介音，没有元音，跳过
+                    continue
+            
+            # 3. 必须有韵母（元音）
+            if is_vowel(phone, language):
+                syllable_phones.append(phone)
+                vowel_end = interval.maxTime * 1000
+                if not consonant_duration:
+                    # 零声母，辅音时长设为元音前30ms
+                    consonant_duration = min(30, (vowel_end - vowel_start) * 0.2)
+                syllable_end = vowel_end
+                i += 1
+                
+                # 4. 检查是否有韵尾（n, ng, i, u）
+                if i < len(intervals):
+                    next_interval = intervals[i]
+                    next_phone = next_interval.mark.strip()
+                    
+                    if next_phone not in SKIP_MARKS:
+                        # 检查是否是韵尾
+                        next_phone_base = _strip_tone(next_phone)
+                        if next_phone_base in CHINESE_CODAS:
+                            syllable_phones.append(next_phone)
+                            syllable_end = next_interval.maxTime * 1000
+                            vowel_end = next_interval.maxTime * 1000
+                            i += 1
+                
+                # 5. 将音节转换为拼音并保存
+                pinyin = self._syllable_to_pinyin(syllable_phones, language, False)
+                if pinyin:
+                    # 使用 presamp.ini 映射查找韵母和声母
+                    vowel_part = self._find_vowel_in_mapping(pinyin, vowel_map)
+                    consonant_part = self._find_consonant_in_mapping(pinyin, consonant_map) if has_consonant else None
+                    
+                    if vowel_part:
+                        syllables.append({
+                            'pinyin': pinyin,
+                            'vowel_part': vowel_part,
+                            'consonant_part': consonant_part,
+                            'vowel_start': vowel_start,
+                            'vowel_end': vowel_end,
+                            'syllable_end': syllable_end
+                        })
+            else:
+                # 不是元音，跳过
+                i += 1
+        
+        # 生成 VC 对：当前音节的韵母 + 下一个音节的声母
+        for idx in range(len(syllables) - 1):
+            current = syllables[idx]
+            next_syl = syllables[idx + 1]
+            
+            # 获取下一个音节的声母
+            next_consonant = next_syl.get('consonant_part')
+            
+            # 如果下一个音节没有声母（零声母），跳过
+            if not next_consonant:
+                continue
+            
+            # 生成 VC 别名
+            vc_alias = f"{current['vowel_part']}{vc_separator}{next_consonant}"
+            
+            # 计算 VC 参数
+            entry = self._calculate_vc_params(
+                wav_name=wav_name,
+                alias=vc_alias,
+                vowel_start_ms=current['vowel_start'],
+                vowel_end_ms=current['vowel_end'],
+                consonant_end_ms=next_syl['syllable_end'],
+                wav_duration_ms=wav_duration_ms,
+                vc_offset_ratio=vc_offset_ratio,
+                vc_overlap_ratio=vc_overlap_ratio
+            )
+            entries.append(entry)
+        
+        return entries
+    
+    def _load_presamp_mapping(self) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """
+        加载中文 CVVC 韵母和声母映射（内置数据）
+        
+        返回:
+            (韵母映射字典, 声母映射字典)
+            韵母映射: {完整拼音: 韵母标识}
+            声母映射: {完整拼音: 声母标识}
+        """
+        vowel_map = {}  # {拼音: 韵母标识}
+        consonant_map = {}  # {拼音: 声母标识}
+        
+        # 内置韵母映射数据（来自 presamp.ini [VOWEL] 部分）
+        vowel_data = {
+            'a': ['a', 'ba', 'pa', 'ma', 'fa', 'da', 'ta', 'na', 'la', 'ga', 'ka', 'ha', 'zha', 'cha', 'sha', 'za', 'ca', 'sa', 'ya', 'lia', 'jia', 'qia', 'xia', 'wa', 'gua', 'kua', 'hua', 'zhua', 'shua', 'dia'],
+            'ai': ['ai', 'bai', 'pai', 'mai', 'dai', 'tai', 'nai', 'lai', 'gai', 'kai', 'hai', 'zhai', 'chai', 'shai', 'zai', 'cai', 'sai', 'wai', 'guai', 'kuai', 'huai', 'zhuai', 'chuai', 'shuai'],
+            'an': ['an', 'ban', 'pan', 'man', 'fan', 'dan', 'tan', 'nan', 'lan', 'gan', 'kan', 'han', 'zhan', 'chan', 'shan', 'ran', 'zan', 'can', 'san', 'wan', 'duan', 'tuan', 'nuan', 'luan', 'guan', 'kuan', 'huan', 'zhuan', 'chuan', 'shuan', 'ruan', 'zuan', 'cuan', 'suan'],
+            'ang': ['ang', 'bang', 'pang', 'mang', 'fang', 'dang', 'tang', 'nang', 'lang', 'gang', 'kang', 'hang', 'zhang', 'chang', 'shang', 'rang', 'zang', 'cang', 'sang', 'yang', 'liang', 'jiang', 'qiang', 'xiang', 'wang', 'guang', 'kuang', 'huang', 'zhuang', 'chuang', 'shuang', 'niang'],
+            'ao': ['ao', 'bao', 'pao', 'mao', 'dao', 'tao', 'nao', 'lao', 'gao', 'kao', 'hao', 'zhao', 'chao', 'shao', 'rao', 'zao', 'cao', 'sao', 'yao', 'biao', 'piao', 'miao', 'diao', 'tiao', 'niao', 'liao', 'jiao', 'qiao', 'xiao'],
+            'e': ['e', 'me', 'de', 'te', 'ne', 'le', 'ge', 'ke', 'he', 'zhe', 'che', 'she', 're', 'ze', 'ce', 'se'],
+            'e0': ['ye', 'bie', 'pie', 'mie', 'die', 'tie', 'nie', 'lie', 'jie', 'qie', 'xie', 'yue', 'nue', 'lue', 'jue', 'que', 'xue'],
+            'ei': ['ei', 'bei', 'pei', 'mei', 'fei', 'dei', 'tei', 'nei', 'lei', 'gei', 'kei', 'hei', 'zhei', 'shei', 'zei', 'wei', 'dui', 'tui', 'gui', 'kui', 'hui', 'zhui', 'chui', 'shui', 'rui', 'zui', 'cui', 'sui'],
+            'en': ['en', 'ben', 'pen', 'men', 'fen', 'nen', 'gen', 'ken', 'hen', 'zhen', 'chen', 'shen', 'ren', 'zen', 'cen', 'sen', 'wen', 'dun', 'tun', 'lun', 'gun', 'kun', 'hun', 'zhun', 'chun', 'shun', 'run', 'zun', 'cun', 'sun'],
+            'en0': ['yan', 'bian', 'pian', 'mian', 'dian', 'tian', 'nian', 'lian', 'jian', 'qian', 'xian', 'yuan', 'juan', 'quan', 'xuan'],
+            'eng': ['beng', 'peng', 'meng', 'feng', 'deng', 'teng', 'neng', 'leng', 'geng', 'keng', 'heng', 'weng', 'zheng', 'cheng', 'sheng', 'reng', 'zeng', 'ceng', 'seng'],
+            'er': ['er'],
+            'i': ['bi', 'pi', 'mi', 'di', 'ti', 'ni', 'li', 'ji', 'qi', 'xi', 'yi'],
+            'in': ['yin', 'bin', 'pin', 'min', 'nin', 'lin', 'jin', 'qin', 'xin'],
+            'ing': ['ying', 'bing', 'ping', 'ming', 'ding', 'ting', 'ning', 'ling', 'jing', 'qing', 'xing'],
+            'i0': ['zi', 'ci', 'si'],
+            'ir': ['zhi', 'chi', 'shi', 'ri'],
+            'o': ['bo', 'po', 'mo', 'fo', 'wo', 'duo', 'tuo', 'nuo', 'luo', 'guo', 'kuo', 'huo', 'zhuo', 'chuo', 'shuo', 'ruo', 'zuo', 'cuo', 'suo'],
+            'ong': ['dong', 'tong', 'nong', 'long', 'gong', 'kong', 'hong', 'zhong', 'chong', 'rong', 'zong', 'cong', 'song', 'yong', 'jiong', 'qiong', 'xiong'],
+            'ou': ['ou', 'pou', 'mou', 'fou', 'dou', 'tou', 'lou', 'gou', 'kou', 'hou', 'zhou', 'chou', 'shou', 'rou', 'zou', 'cou', 'sou', 'you', 'miu', 'diu', 'niu', 'liu', 'jiu', 'qiu', 'xiu'],
+            'u': ['bu', 'pu', 'mu', 'fu', 'du', 'tu', 'nu', 'lu', 'gu', 'ku', 'hu', 'zhu', 'chu', 'shu', 'ru', 'zu', 'cu', 'su', 'wu'],
+            'v': ['yu', 'nv', 'lv', 'ju', 'qu', 'xu'],
+            'vn': ['yun', 'jun', 'qun', 'xun'],
+        }
+        
+        # 内置声母映射数据（来自 presamp.ini [CONSONANT] 部分）
+        consonant_data = {
+            'b': ['ba', 'bai', 'ban', 'bang', 'bao', 'biao', 'bie', 'bei', 'ben', 'bian', 'beng', 'bi', 'bin', 'bing', 'bo', 'bu'],
+            'p': ['pa', 'pai', 'pan', 'pang', 'pao', 'piao', 'pie', 'pei', 'pen', 'pian', 'peng', 'pi', 'pin', 'ping', 'po', 'pou', 'pu'],
+            'm': ['ma', 'mai', 'man', 'mang', 'mao', 'me', 'mei', 'men', 'meng', 'mo', 'mou', 'mu'],
+            'f': ['fa', 'fan', 'fang', 'fei', 'fen', 'feng', 'fo', 'fou', 'fu'],
+            'd': ['da', 'dia', 'dai', 'dan', 'duan', 'dang', 'dao', 'diao', 'de', 'die', 'dei', 'dui', 'dun', 'dian', 'deng', 'di', 'ding', 'duo', 'dong', 'dou', 'diu', 'du'],
+            't': ['ta', 'tai', 'tan', 'tuan', 'tang', 'tao', 'tiao', 'te', 'tie', 'tei', 'tui', 'tun', 'tian', 'teng', 'ti', 'ting', 'tuo', 'tong', 'tou', 'tu'],
+            'n': ['na', 'nai', 'nan', 'nuan', 'nang', 'nao', 'ne', 'nue', 'nei', 'nen', 'neng', 'nuo', 'nong', 'nu', 'nv'],
+            'l': ['la', 'lai', 'lan', 'luan', 'lang', 'lao', 'le', 'lue', 'lei', 'lun', 'leng', 'luo', 'long', 'lou', 'lu', 'lv'],
+            'g': ['ga', 'gua', 'gai', 'guai', 'gan', 'guan', 'gang', 'guang', 'gao', 'ge', 'gei', 'gui', 'gen', 'gun', 'geng', 'guo', 'gong', 'gou', 'gu'],
+            'k': ['ka', 'kua', 'kai', 'kuai', 'kan', 'kuan', 'kang', 'kuang', 'kao', 'ke', 'kei', 'kui', 'ken', 'kun', 'keng', 'kuo', 'kong', 'kou', 'ku'],
+            'h': ['ha', 'hai', 'han', 'hang', 'hao', 'he', 'hei', 'hen', 'heng', 'hong', 'hou'],
+            'zh': ['zha', 'zhua', 'zhai', 'zhuai', 'zhan', 'zhuan', 'zhang', 'zhuang', 'zhao', 'zhe', 'zhei', 'zhui', 'zhen', 'zhun', 'zheng', 'zhi', 'zhuo', 'zhong', 'zhou', 'zhu'],
+            'ch': ['cha', 'chai', 'chuai', 'chan', 'chuan', 'chang', 'chuang', 'chao', 'che', 'chui', 'chen', 'chun', 'cheng', 'chi', 'chuo', 'chong', 'chou', 'chu'],
+            'sh': ['sha', 'shai', 'shan', 'shang', 'shao', 'she', 'shei', 'shen', 'sheng', 'shi', 'shou'],
+            'z': ['za', 'zai', 'zan', 'zuan', 'zang', 'zao', 'ze', 'zei', 'zui', 'zen', 'zun', 'zeng', 'zi', 'zuo', 'zong', 'zou', 'zu'],
+            'c': ['ca', 'cai', 'can', 'cuan', 'cang', 'cao', 'ce', 'cui', 'cen', 'cun', 'ceng', 'ci', 'cuo', 'cong', 'cou', 'cu'],
+            's': ['sa', 'sai', 'san', 'sang', 'sao', 'se', 'sen', 'seng', 'si', 'song', 'sou'],
+            'y': ['ya', 'yang', 'yao', 'ye', 'yan', 'yi', 'yin', 'ying', 'yong', 'you'],
+            'ly': ['lia', 'liang', 'liao', 'lie', 'lian', 'li', 'lin', 'ling', 'liu'],
+            'j': ['jia', 'jiang', 'jiao', 'jie', 'jue', 'jian', 'juan', 'ji', 'jin', 'jing', 'jiong', 'jiu', 'ju', 'jun'],
+            'q': ['qia', 'qiang', 'qiao', 'qie', 'que', 'qian', 'quan', 'qi', 'qin', 'qing', 'qiong', 'qiu', 'qu', 'qun'],
+            'xy': ['xia', 'xiang', 'xiao', 'xie', 'xian', 'xi', 'xin', 'xing', 'xiong', 'xiu'],
+            'w': ['wa', 'wai', 'wan', 'wang', 'wei', 'wen', 'weng', 'wo', 'wu'],
+            'hw': ['hua', 'huai', 'huan', 'huang', 'hui', 'hun', 'huo', 'hu'],
+            'shw': ['shua', 'shuai', 'shuan', 'shuang', 'shui', 'shun', 'shuo', 'shu'],
+            'r': ['ran', 'ruan', 'rang', 'rao', 're', 'rui', 'ren', 'run', 'reng', 'ri', 'ruo', 'rong', 'rou', 'ru'],
+            'sw': ['suan', 'sui', 'sun', 'suo', 'su'],
+            'ny': ['niang', 'niao', 'nie', 'nian', 'ni', 'nin', 'ning', 'niu'],
+            'my': ['miao', 'mie', 'mian', 'mi', 'min', 'ming', 'miu'],
+            'v': ['yu', 'yue', 'yuan', 'yun'],
+            'xw': ['xue', 'xuan', 'xu', 'xun'],
+        }
+        
+        # 构建韵母映射
+        for vowel_id, pinyins in vowel_data.items():
+            for pinyin in pinyins:
+                vowel_map[pinyin] = vowel_id
+        
+        # 构建声母映射
+        for consonant_id, pinyins in consonant_data.items():
+            for pinyin in pinyins:
+                consonant_map[pinyin] = consonant_id
+        
+        self._log(f"加载内置 CVVC 映射: {len(vowel_map)} 个韵母映射, {len(consonant_map)} 个声母映射")
+        return vowel_map, consonant_map
+    
+    def _find_vowel_in_mapping(self, pinyin: str, vowel_map: Dict[str, str]) -> Optional[str]:
+        """
+        在韵母映射中查找拼音对应的韵母标识
+        
+        参数:
+            pinyin: 完整拼音
+            vowel_map: 韵母映射字典
+        
+        返回:
+            韵母标识，如果未找到则返回 None
+        """
+        return vowel_map.get(pinyin)
+    
+    def _find_consonant_in_mapping(self, pinyin: str, consonant_map: Dict[str, str]) -> Optional[str]:
+        """
+        在声母映射中查找拼音对应的声母标识
+        
+        参数:
+            pinyin: 完整拼音
+            consonant_map: 声母映射字典
+        
+        返回:
+            声母标识，如果未找到则返回 None
+        """
+        return consonant_map.get(pinyin)
     
     def _calculate_oto_params(
         self,
@@ -682,6 +1600,67 @@ class UTAUOtoExportPlugin(ExportPlugin):
             "preutterance": round(preutterance, 1),
             "overlap": round(overlap, 1),
             "segment_duration": segment_duration,  # 用于排序
+        }
+    
+    def _calculate_vc_params(
+        self,
+        wav_name: str,
+        alias: str,
+        vowel_start_ms: float,
+        vowel_end_ms: float,
+        consonant_end_ms: float,
+        wav_duration_ms: float,
+        vc_offset_ratio: float,
+        vc_overlap_ratio: float
+    ) -> Dict:
+        """
+        计算 VC 部的 oto.ini 参数
+        
+        VC 部从元音后半段开始，到辅音结束
+        
+        参数:
+            wav_name: 音频文件名
+            alias: VC 别名
+            vowel_start_ms: 元音开始时间
+            vowel_end_ms: 元音结束时间（即辅音开始时间）
+            consonant_end_ms: 辅音结束时间
+            wav_duration_ms: 音频总时长
+            vc_offset_ratio: VC 偏移比例
+            vc_overlap_ratio: VC overlap 比例
+        
+        返回:
+            oto 参数字典
+        """
+        vowel_duration = vowel_end_ms - vowel_start_ms
+        
+        # offset: 元音后半段位置
+        offset = vowel_end_ms - vowel_duration * vc_offset_ratio
+        
+        # 总时长（从 offset 到辅音结束）
+        segment_duration = consonant_end_ms - offset
+        
+        # preutterance: 从 offset 到辅音开始（即元音结束）的距离
+        preutterance = vowel_end_ms - offset
+        
+        # consonant: 固定区域，较短
+        consonant = min(30, segment_duration * 0.3)
+        
+        # overlap: 较大，平滑过渡
+        overlap = preutterance * vc_overlap_ratio
+        
+        # cutoff: 负值，表示总时长
+        cutoff = -segment_duration
+        
+        return {
+            "wav_name": wav_name,
+            "alias": alias,
+            "offset": round(offset, 1),
+            "consonant": round(consonant, 1),
+            "cutoff": round(cutoff, 1),
+            "preutterance": round(preutterance, 1),
+            "overlap": round(overlap, 1),
+            "segment_duration": segment_duration,
+            "is_vc": True  # 标记为 VC 部
         }
     
     def _filter_by_alias(
@@ -1331,7 +2310,12 @@ class UTAUOtoExportPlugin(ExportPlugin):
         
         # 获取有效的元音列表（用于验证组合）
         if language in ('chinese', 'zh', 'mandarin'):
-            valid_vowels = {'a', 'o', 'e', 'i', 'u', 'v', 'ai', 'ei', 'ao', 'ou', 'an', 'en', 'ang', 'eng', 'ong', 'er'}
+            valid_vowels = {'a', 'o', 'e', 'i', 'u', 'v',
+                          'ai', 'ei', 'ao', 'ou',
+                          'an', 'en', 'ang', 'eng', 'ong',
+                          'ia', 'ie', 'iao', 'iu', 'ian', 'in', 'iang', 'ing', 'iong',
+                          'ua', 'uo', 'uai', 'ui', 'uan', 'un', 'uang', 'ueng',
+                          've', 'van', 'vn', 'er'}
         else:
             valid_vowels = {'a', 'i', 'u', 'e', 'o'}
         
@@ -1448,10 +2432,13 @@ class UTAUOtoExportPlugin(ExportPlugin):
         all_consonants = ['b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h',
                           'j', 'q', 'x', 'zh', 'ch', 'sh', 'r', 'z', 'c', 's', 'y', 'w']
         
-        # 中文所有可能的韵母
-        all_vowels = ['a', 'o', 'e', 'i', 'u', 'v', 'ai', 'ei', 'ao', 'ou',
-                      'an', 'en', 'ang', 'eng', 'ong', 'in', 'ing', 'ian', 'iang',
-                      'uan', 'uang', 'un', 'ia', 'ie', 'iu', 'iao', 'ua', 'uo', 'ui', 'uai']
+        # 中文所有可能的韵母（包含所有标准韵母）
+        all_vowels = ['a', 'o', 'e', 'i', 'u', 'v',
+                      'ai', 'ei', 'ao', 'ou',
+                      'an', 'en', 'ang', 'eng', 'ong',
+                      'ia', 'ie', 'iao', 'iu', 'ian', 'in', 'iang', 'ing', 'iong',
+                      'ua', 'uo', 'uai', 'ui', 'uan', 'un', 'uang', 'ueng',
+                      've', 'van', 'vn', 'er']
         
         fuzzy_count = 0
         

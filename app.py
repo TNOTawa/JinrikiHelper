@@ -13,13 +13,9 @@ from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# 确保日志立即输出（禁用缓冲）
-sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
 # 项目根目录
 BASE_DIR = Path(__file__).parent.absolute()
@@ -51,69 +47,6 @@ def get_models_dir():
 
 MODELS_DIR = None  # 延迟初始化
 MFA_DIR = None
-
-
-def cleanup_temp_files():
-    """
-    启动时清理临时文件，释放磁盘空间
-    
-    清理目标：
-    - /tmp/gradio/* (Gradio 上传缓存)
-    - /tmp/jinriki_* (本应用的工作空间)
-    - /tmp/mfa_* (MFA 临时文件)
-    """
-    import shutil
-    import time
-    
-    logger.info("清理临时文件...")
-    
-    cleaned_size = 0
-    cleaned_count = 0
-    
-    # 清理 Gradio 缓存
-    gradio_tmp = Path("/tmp/gradio")
-    if gradio_tmp.exists():
-        try:
-            for item in gradio_tmp.iterdir():
-                try:
-                    if item.is_dir():
-                        size = sum(f.stat().st_size for f in item.rglob('*') if f.is_file())
-                        shutil.rmtree(item)
-                    else:
-                        size = item.stat().st_size
-                        item.unlink()
-                    cleaned_size += size
-                    cleaned_count += 1
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"清理 Gradio 缓存失败: {e}")
-    
-    # 清理 jinriki 工作空间
-    tmp_dir = Path("/tmp")
-    if tmp_dir.exists():
-        try:
-            for item in tmp_dir.iterdir():
-                if item.name.startswith("jinriki_") or item.name.startswith("mfa_"):
-                    try:
-                        if item.is_dir():
-                            size = sum(f.stat().st_size for f in item.rglob('*') if f.is_file())
-                            shutil.rmtree(item)
-                        else:
-                            size = item.stat().st_size
-                            item.unlink()
-                        cleaned_size += size
-                        cleaned_count += 1
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning(f"清理工作空间失败: {e}")
-    
-    if cleaned_count > 0:
-        size_mb = cleaned_size / (1024 * 1024)
-        logger.info(f"已清理 {cleaned_count} 个临时文件/目录，释放 {size_mb:.1f} MB")
-    else:
-        logger.info("无需清理临时文件")
 
 
 def ensure_ffmpeg():
@@ -168,17 +101,9 @@ def setup_environment():
         Path("/home/studio_service").exists(), # 魔搭创空间特征目录
     ])
     
-    # 云端环境启动时清理临时文件，释放磁盘空间
-    if is_cloud:
-        cleanup_temp_files()
-    
-    logger.info("清理完成，继续初始化...")
-    
     # 确保 ffmpeg 已安装（支持 m4a 等音频格式）
     if is_cloud or platform.system() != "Windows":
-        logger.info("检查 ffmpeg...")
         ensure_ffmpeg()
-        logger.info("ffmpeg 检查完成")
     
     # 魔搭创空间无法访问 HuggingFace，使用镜像
     if is_cloud and Path("/home/studio_service").exists():
@@ -196,7 +121,6 @@ def setup_environment():
     if platform.system() != "Windows":
         logger.info("Linux 环境，检查并安装 MFA...")
         setup_mfa_linux()
-        logger.info("MFA 设置完成")
     
     if is_cloud:
         logger.info("检测到云端环境，正在初始化...")
@@ -205,9 +129,7 @@ def setup_environment():
         os.environ.setdefault("TMPDIR", "/tmp")
         
         # 下载所有必需模型
-        logger.info("开始下载模型...")
         download_all_models()
-        logger.info("模型下载完成")
     else:
         logger.info("本地环境运行")
 
@@ -248,13 +170,11 @@ def setup_mfa_linux():
             mamba_root.mkdir(parents=True, exist_ok=True)
             
             # 下载并安装 micromamba
-            result = subprocess.run([
+            subprocess.run([
                 "bash", "-c",
                 f'curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C {mamba_root} bin/micromamba'
-            ], check=True, capture_output=True, text=True, timeout=120)
+            ], check=True, capture_output=True, timeout=120)
             logger.info("micromamba 下载完成")
-        else:
-            logger.info("micromamba 已存在，跳过下载")
         
         # 2. 使用 micromamba 创建环境并安装 MFA
         mfa_bin_path = mfa_env / "bin" / "mfa"
@@ -277,23 +197,20 @@ def setup_mfa_linux():
                 logger.info("MFA 环境验证通过，无需重新安装")
         
         if need_install:
-            logger.info("使用 micromamba 安装 MFA（这可能需要几分钟）...")
+            logger.info("使用 micromamba 安装 MFA...")
             env = os.environ.copy()
             env["MAMBA_ROOT_PREFIX"] = str(mamba_root)
             
             # 创建环境并安装 MFA（指定 Python 3.11）
-            logger.info("执行 micromamba create...")
-            result = subprocess.run([
+            subprocess.run([
                 str(mamba_bin), "create", "-n", "mfa",
                 "-c", "conda-forge",
                 "python=3.11",
                 "montreal-forced-aligner",
                 "-y"
             ], env=env, check=True, capture_output=True, text=True, timeout=600)
-            logger.info("MFA 环境创建完成")
             
             # 更新确保使用 CPU 版本的 kaldi
-            logger.info("安装 CPU 版本 kaldi...")
             subprocess.run([
                 str(mamba_bin), "install", "-n", "mfa",
                 "-c", "conda-forge",
@@ -653,20 +570,12 @@ def download_mfa_models_all() -> bool:
 
 def main():
     """主入口"""
-    logger.info("=" * 50)
-    logger.info("人力V助手 云端版启动")
-    logger.info("=" * 50)
-    
     setup_environment()
-    
-    logger.info("环境初始化完成，启动 Gradio UI...")
     
     # 导入并启动云端 GUI
     from src.gui_cloud import create_cloud_ui
     
     app = create_cloud_ui()
-    
-    logger.info("Gradio UI 创建完成，启动服务...")
     
     # 云端配置
     # 启用队列，魔搭CPU按需分配，无需设置并发上限

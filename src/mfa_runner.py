@@ -102,18 +102,6 @@ def _build_mfa_env(mfa_root: Optional[Path] = None) -> dict:
             str(MFA_ENGINE_DIR / "bin"),
         ]
         env["PATH"] = ";".join(mfa_paths) + ";" + env.get("PATH", "")
-        
-        # Windows: 设置 MFA_ROOT_DIR 到纯 ASCII 路径
-        # 解决用户名包含中文时 OpenFST 无法写入文件的问题
-        # 优先使用项目目录下的 mfa_temp，确保路径为纯 ASCII
-        if mfa_root:
-            env["MFA_ROOT_DIR"] = str(mfa_root)
-        else:
-            # 默认使用项目目录下的 mfa_data 作为 MFA 数据目录
-            mfa_data_dir = BASE_DIR / "mfa_data"
-            mfa_data_dir.mkdir(parents=True, exist_ok=True)
-            env["MFA_ROOT_DIR"] = str(mfa_data_dir)
-        logger.info(f"设置 MFA_ROOT_DIR: {env['MFA_ROOT_DIR']}")
     else:
         # Linux: 设置会话独立的 MFA_ROOT_DIR（解决并发数据库冲突）
         if mfa_root:

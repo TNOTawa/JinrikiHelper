@@ -60,17 +60,9 @@ def safe_gradio_handler(func):
     Gradio 处理函数的安全包装器
     
     捕获所有异常并返回友好的错误信息，避免 Gradio 显示默认的"错误"状态
-    同时确保异常时释放并发计数，防止计数滞留
     """
     import functools
     import traceback
-    
-    # 需要管理并发计数的函数列表
-    CONCURRENCY_MANAGED_FUNCS = {
-        'process_make_voicebank',
-        'process_export_voicebank', 
-        'process_mfa_realign'
-    }
     
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -81,15 +73,11 @@ def safe_gradio_handler(func):
             error_trace = traceback.format_exc()
             logger.error(f"处理函数 {func.__name__} 发生异常:\n{error_trace}")
             
-            # 如果是并发管理的函数，确保释放并发计数
-            # 注意：函数内部可能已经调用了 decrement_concurrency()，
-            # 但如果异常发生在 increment 之后、decrement 之前，这里需要补救
-            # decrement_concurrency() 内部有 max(0, ...) 保护，不会变成负数
-            if func.__name__ in CONCURRENCY_MANAGED_FUNCS:
-                decrement_concurrency()
-                logger.info(f"异常处理：已释放 {func.__name__} 的并发计数")
-            
             # 根据函数返回值数量返回错误信息
+            # 检查函数的类型注解来确定返回值数量
+            annotations = getattr(func, '__annotations__', {})
+            return_type = annotations.get('return', None)
+            
             error_msg = f"❌ 系统错误: {str(e)}"
             error_detail = f"异常类型: {type(e).__name__}\n详情: {str(e)}"
             
@@ -141,144 +129,6 @@ def create_temp_workspace() -> str:
     workspace = os.path.join(CloudConfig.TEMP_BASE, f"jinriki_{workspace_id}")
     os.makedirs(workspace, exist_ok=True)
     return workspace
-
-
-def cleanup_gradio_cache(max_age_hours: float = 1.0):
-    """
-    清理 Gradio 临时文件缓存
-    
-    参数:
-        max_age_hours: 文件最大保留时间（小时），超过此时间的文件将被删除
-    """
-    import time
-    
-    gradio_tmp_dir = os.path.join(tempfile.gettempdir(), "gradio")
-    if not os.path.exists(gradio_tmp_dir):
-        return
-    
-    current_time = time.time()
-    max_age_seconds = max_age_hours * 3600
-    cleaned_count = 0
-    cleaned_size = 0
-    
-    try:
-        for root, dirs, files in os.walk(gradio_tmp_dir, topdown=False):
-            for name in files:
-                file_path = os.path.join(root, name)
-                try:
-                    file_age = current_time - os.path.getmtime(file_path)
-                    if file_age > max_age_seconds:
-                        file_size = os.path.getsize(file_path)
-                        os.remove(file_path)
-                        cleaned_count += 1
-                        cleaned_size += file_size
-                except Exception:
-                    pass
-            
-            # 删除空目录
-            for name in dirs:
-                dir_path = os.path.join(root, name)
-                try:
-                    if not os.listdir(dir_path):
-                        os.rmdir(dir_path)
-                except Exception:
-                    pass
-        
-        if cleaned_count > 0:
-            size_mb = cleaned_size / (1024 * 1024)
-            logger.info(f"Gradio 缓存清理: 删除 {cleaned_count} 个文件, 释放 {size_mb:.1f} MB")
-    except Exception as e:
-        logger.warning(f"Gradio 缓存清理失败: {e}")
-
-
-def cleanup_old_jinriki_workspaces(max_age_hours: float = 2.0):
-    """
-    清理旧的 jinriki 工作空间
-    
-    参数:
-        max_age_hours: 工作空间最大保留时间（小时）
-    """
-    import time
-    
-    current_time = time.time()
-    max_age_seconds = max_age_hours * 3600
-    cleaned_count = 0
-    
-    try:
-        for item in os.listdir(CloudConfig.TEMP_BASE):
-            if item.startswith("jinriki_"):
-                workspace_path = os.path.join(CloudConfig.TEMP_BASE, item)
-                if os.path.isdir(workspace_path):
-                    try:
-                        dir_age = current_time - os.path.getmtime(workspace_path)
-                        if dir_age > max_age_seconds:
-                            shutil.rmtree(workspace_path)
-                            cleaned_count += 1
-                    except Exception:
-                        pass
-        
-        if cleaned_count > 0:
-            logger.info(f"工作空间清理: 删除 {cleaned_count} 个旧工作空间")
-    except Exception as e:
-        logger.warning(f"工作空间清理失败: {e}")
-
-
-def start_periodic_cleanup(interval_minutes: int = 15):
-    """
-    启动定期清理任务
-    
-    参数:
-        interval_minutes: 清理间隔（分钟），默认15分钟
-    """
-    import time
-    
-    def cleanup_task():
-        while True:
-            try:
-                time.sleep(interval_minutes * 60)
-                logger.info("执行定期清理...")
-                cleanup_gradio_cache(max_age_hours=0.5)  # 30分钟以上的缓存
-                cleanup_old_jinriki_workspaces(max_age_hours=1.0)  # 1小时以上的工作空间
-            except Exception as e:
-                logger.error(f"定期清理任务异常: {e}")
-    
-    cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
-    cleanup_thread.start()
-    logger.info(f"定期清理任务已启动，间隔 {interval_minutes} 分钟")
-
-
-def check_disk_space(min_mb: int = 100) -> Tuple[bool, str]:
-    """
-    检查磁盘空间是否充足
-    
-    参数:
-        min_mb: 最小可用空间（MB）
-    
-    返回:
-        (是否充足, 消息)
-    """
-    try:
-        import shutil
-        total, used, free = shutil.disk_usage("/tmp")
-        free_mb = free / (1024 * 1024)
-        
-        if free_mb < min_mb:
-            # 尝试清理
-            logger.warning(f"磁盘空间不足 ({free_mb:.0f} MB)，尝试清理...")
-            cleanup_gradio_cache(max_age_hours=0)  # 清理所有缓存
-            cleanup_old_jinriki_workspaces(max_age_hours=0)  # 清理所有工作空间
-            
-            # 重新检查
-            total, used, free = shutil.disk_usage("/tmp")
-            free_mb = free / (1024 * 1024)
-            
-            if free_mb < min_mb:
-                return False, f"磁盘空间不足，仅剩 {free_mb:.0f} MB，请稍后重试"
-        
-        return True, f"可用空间: {free_mb:.0f} MB"
-    except Exception as e:
-        logger.warning(f"检查磁盘空间失败: {e}")
-        return True, "无法检查磁盘空间"  # 无法检查时允许继续
 
 
 def cleanup_workspace(workspace: str):
@@ -351,47 +201,34 @@ def get_audio_duration(file_path: str) -> Optional[float]:
     
     返回: 时长秒数，失败返回 None
     """
-    import subprocess
-    
-    try:
-        # 优先使用 ffprobe（更轻量，不需要解码整个文件）
-        cmd = [
-            'ffprobe', '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            file_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        
-        if result.returncode == 0 and result.stdout.strip():
-            duration = float(result.stdout.strip())
-            if duration > 0:
-                return duration
-        
-        # ffprobe 失败时的错误信息
-        if result.stderr:
-            logger.debug(f"ffprobe 错误: {result.stderr.strip()}")
-        
-    except subprocess.TimeoutExpired:
-        logger.warning(f"ffprobe 超时: {file_path}")
-    except (ValueError, Exception) as e:
-        logger.debug(f"ffprobe 获取时长失败: {e}")
-    
-    # 回退：对于 WAV 文件，使用 wave 模块
     try:
         import wave
         import contextlib
         
+        # 对于 WAV 文件，使用 wave 模块快速获取时长
         if file_path.lower().endswith('.wav'):
             with contextlib.closing(wave.open(file_path, 'r')) as f:
                 frames = f.getnframes()
                 rate = f.getframerate()
                 return frames / float(rate)
+        
+        # 对于其他格式，使用 pydub（如果可用）
+        try:
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(file_path)
+            return len(audio) / 1000.0  # 毫秒转秒
+        except ImportError:
+            # pydub 不可用，尝试使用 librosa
+            try:
+                import librosa
+                duration = librosa.get_duration(path=file_path)
+                return duration
+            except ImportError:
+                logger.warning(f"无法获取音频时长，缺少 pydub 或 librosa: {file_path}")
+                return None
     except Exception as e:
-        logger.debug(f"wave 模块读取失败: {e}")
-    
-    logger.warning(f"无法获取音频时长: {os.path.basename(file_path)}")
-    return None
+        logger.warning(f"获取音频时长失败 {file_path}: {e}")
+        return None
 
 
 # 云端音频时长限制（秒）
@@ -407,24 +244,15 @@ def validate_audio_upload(files) -> Tuple[bool, str, List[str]]:
     if not files:
         return False, "请上传音频文件", []
     
-    # 调试：记录 Gradio 传入的文件对象类型
-    logger.info(f"Gradio 文件对象类型: {type(files)}, 数量: {len(files) if hasattr(files, '__len__') else 'N/A'}")
-    
     valid_files = []
-    for i, f in enumerate(files):
-        logger.info(f"文件[{i}] 类型: {type(f)}, 值: {f}")
-        
-        # Gradio 6.x 可能直接传入字符串路径
-        if isinstance(f, str):
-            path = f
-        elif hasattr(f, 'name'):
+    for f in files:
+        if hasattr(f, 'name'):
             path = f.name
         else:
             path = str(f)
         
         if path.lower().endswith(CloudConfig.AUDIO_EXTENSIONS):
             valid_files.append(path)
-            logger.info(f"文件[{i}] 有效路径: {path}")
     
     if not valid_files:
         return False, f"未找到有效音频文件，支持格式: {', '.join(CloudConfig.AUDIO_EXTENSIONS)}", []
@@ -493,12 +321,6 @@ def process_make_voicebank(
         logs.append(msg)
         logger.info(msg)
     
-    # 检查磁盘空间
-    space_ok, space_msg = check_disk_space(min_mb=200)
-    if not space_ok:
-        decrement_concurrency()
-        return f"❌ {space_msg}", "", None, None
-    
     try:
         # 导入依赖（放在 try 块内以捕获导入错误）
         from src.pipeline import PipelineConfig, VoiceBankPipeline
@@ -541,73 +363,22 @@ def process_make_voicebank(
         os.makedirs(input_dir, exist_ok=True)
         os.makedirs(bank_dir, exist_ok=True)
         
-        # 复制音频文件到输入目录（重命名为安全文件名）
+        # 复制音频文件到输入目录
         progress(0.05, desc="复制音频文件...")
         copied_count = 0
-        copy_errors = []
-        
-        for idx, src_path in enumerate(file_paths):
-            original_name = os.path.basename(src_path)
-            
-            # 检查源文件
+        for src_path in file_paths:
+            # 检查源文件是否存在
             if not os.path.exists(src_path):
-                copy_errors.append(f"{original_name}: 文件不存在")
+                log(f"⚠️ 文件不存在或已被清理: {src_path}")
                 continue
-            
-            src_size = os.path.getsize(src_path)
-            if src_size == 0:
-                copy_errors.append(f"{original_name}: 文件为空")
-                continue
-            
-            # 验证文件是否为有效音频（检查文件头）
             try:
-                with open(src_path, 'rb') as f:
-                    header = f.read(12)
-                
-                # 检查常见音频格式的文件头
-                is_valid_audio = False
-                if header[:4] == b'RIFF' and header[8:12] == b'WAVE':  # WAV
-                    is_valid_audio = True
-                elif header[:4] == b'OggS':  # OGG
-                    is_valid_audio = True
-                elif header[:3] == b'ID3' or header[:2] == b'\xff\xfb':  # MP3
-                    is_valid_audio = True
-                elif header[:4] == b'fLaC':  # FLAC
-                    is_valid_audio = True
-                elif header[4:8] == b'ftyp':  # M4A/MP4
-                    is_valid_audio = True
-                
-                if not is_valid_audio:
-                    copy_errors.append(f"{original_name}: 无效的音频文件格式 (header: {header[:8].hex()})")
-                    continue
-                    
-            except Exception as e:
-                copy_errors.append(f"{original_name}: 无法读取文件头 ({e})")
-                continue
-            
-            try:
-                # 生成安全的文件名
-                _, ext = os.path.splitext(original_name)
-                safe_name = f"audio_{idx:04d}{ext.lower()}"
-                dst_path = os.path.join(input_dir, safe_name)
-                
+                dst_path = os.path.join(input_dir, os.path.basename(src_path))
                 shutil.copy2(src_path, dst_path)
-                
-                # 验证复制结果
-                if os.path.getsize(dst_path) == src_size:
-                    copied_count += 1
-                    log(f"  {original_name} ({src_size} bytes) -> {safe_name}")
-                else:
-                    copy_errors.append(f"{original_name}: 复制不完整")
+                copied_count += 1
             except Exception as e:
-                copy_errors.append(f"{original_name}: {e}")
-        
-        if copy_errors:
-            for err in copy_errors:
-                log(f"⚠️ {err}")
+                log(f"⚠️ 复制文件失败 {os.path.basename(src_path)}: {e}")
         
         if copied_count == 0:
-            decrement_concurrency()
             return "❌ 无法访问上传的文件，请重新上传", "\n".join(logs), None, None
         
         log(f"📋 已复制 {copied_count}/{len(file_paths)} 个文件到工作目录")
@@ -825,12 +596,6 @@ def process_export_voicebank(
     def log(msg):
         logs.append(msg)
         logger.info(msg)
-    
-    # 检查磁盘空间
-    space_ok, space_msg = check_disk_space(min_mb=100)
-    if not space_ok:
-        decrement_concurrency()
-        return f"❌ {space_msg}", "", None
     
     # 验证输入
     valid, msg, source_name = validate_voicebank_zip(zip_file)
@@ -1053,12 +818,6 @@ def process_mfa_realign(
     def log(msg):
         logs.append(msg)
         logger.info(msg)
-    
-    # 检查磁盘空间
-    space_ok, space_msg = check_disk_space(min_mb=100)
-    if not space_ok:
-        decrement_concurrency()
-        return f"❌ {space_msg}", "", None
     
     # 验证输入
     if not zip_file:
@@ -1949,14 +1708,6 @@ def create_cloud_ui():
 
 def main():
     """云端入口"""
-    # 启动时执行一次清理
-    logger.info("启动时执行缓存清理...")
-    cleanup_gradio_cache(max_age_hours=0.5)  # 清理超过30分钟的缓存
-    cleanup_old_jinriki_workspaces(max_age_hours=1.0)  # 清理超过1小时的工作空间
-    
-    # 启动定期清理任务
-    start_periodic_cleanup(interval_minutes=30)
-    
     app = create_cloud_ui()
     # 启用队列，魔搭CPU按需分配，无需设置并发上限
     app.queue()

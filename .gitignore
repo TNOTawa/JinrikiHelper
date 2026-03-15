@@ -1,49 +1,29 @@
-# 虚拟环境
-.venv/
-venv/
+# Large local/portable data folders
+便携版打包/
+bank/
+export/
+mfa_data/
+mfa_temp/
+models/
+python/
+tools/mfa_engine/
+tools/ffmpeg/
 
-# Python 缓存
+# Local config files
+config.json
+*.local.json
+.env
+.env.*
+
+# Python cache/log files
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-*.egg
-*.egg-info/
-
-# IDE
-.idea/
-.kiro/
-.vscode/
-*.swp
-*.swo
-
-# 日志和临时文件
+*.pyo
+*.pyd
 *.log
-*.tmp
-temp/
-mfa_temp/
 
-# 用户配置 (包含本地路径)
-config.json
-
-# 本地启动脚本 (包含本地路径)
-run_local*.bat
-
-# 用户数据目录 (保留目录结构)
-bank/*/
-export/*/
-!bank/.gitkeep
-!export/.gitkeep
-
-# 测试临时文件
-tests/temp/*
-!tests/temp/.gitkeep
-
-# MFA 引擎 (体积大，需单独下载)
-tools/mfa_engine/
-
-# 模型文件 (体积大，由用户下载)
-models/whisper/
-models/silero_vad/*.onnx
-models/mfa/*.zip
-models/mfa/*.dict
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
