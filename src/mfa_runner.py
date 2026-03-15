@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import logging
 import time
+import importlib.util
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -46,6 +47,12 @@ def _probe_mfa_command(prefix: list) -> bool:
 
 def _resolve_linux_mfa_command() -> Optional[list]:
     """解析 Linux 下可用的 MFA 命令入口"""
+    if importlib.util.find_spec("montreal_forced_aligner.command_line.mfa") is not None:
+        return [sys.executable, "-m", "montreal_forced_aligner.command_line.mfa"]
+
+    if importlib.util.find_spec("montreal_forced_aligner") is not None:
+        return [sys.executable, "-m", "montreal_forced_aligner"]
+
     candidates = [
         ["mfa"],
         [sys.executable, "-m", "montreal_forced_aligner"],

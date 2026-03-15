@@ -461,10 +461,9 @@ def process_make_voicebank(
     task = TASK_MANAGER.start_task("make", session_id)
     if not task:
         return f"❌ 服务繁忙，当前并发已达上限（{CloudConfig.MAX_CONCURRENT_JOBS}）", "", None, None
-    
     logs = []
     workspace = None
-    
+
     def log(msg):
         logs.append(msg)
         logger.info(msg)
@@ -472,39 +471,39 @@ def process_make_voicebank(
 
     def is_cancelled() -> bool:
         return TASK_MANAGER.should_cancel(task.task_id)
-    
+
     try:
-        # 导入依赖（放在 try 块内以捕获导入错误）
-        from src.pipeline import PipelineConfig, VoiceBankPipeline
-    except Exception as e:
-        logger.error(f"导入模块失败: {e}", exc_info=True)
-        return f"❌ 系统错误: 模块加载失败", str(e), None, None
-    
-    # 验证输入
-    sanitized_name = sanitize_source_name(source_name)
-    if not sanitized_name:
-        return "❌ 请输入音源名称", "", None, None
-    source_name = sanitized_name
-    
-    valid, msg, file_paths = validate_audio_upload(audio_files)
-    if not valid:
-        return f"❌ {msg}", "", None, None
-    
-    log(f"📁 {msg}")
-    
-    # 检查音频时长限制
-    valid, duration_msg, file_paths = validate_audio_duration(file_paths)
-    if not valid:
-        return f"❌ {duration_msg}", "", None, None
-    
-    if duration_msg:
-        log(f"⚠️ {duration_msg}")
-    
-    # 创建临时工作空间
-    workspace = create_temp_workspace()
-    log(f"🔧 创建工作空间: {workspace}")
-    
-    try:
+        try:
+            # 导入依赖（放在 try 块内以捕获导入错误）
+            from src.pipeline import PipelineConfig, VoiceBankPipeline
+        except Exception as e:
+            logger.error(f"导入模块失败: {e}", exc_info=True)
+            return f"❌ 系统错误: 模块加载失败", str(e), None, None
+
+        # 验证输入
+        sanitized_name = sanitize_source_name(source_name)
+        if not sanitized_name:
+            return "❌ 请输入音源名称", "", None, None
+        source_name = sanitized_name
+
+        valid, msg, file_paths = validate_audio_upload(audio_files)
+        if not valid:
+            return f"❌ {msg}", "", None, None
+
+        log(f"📁 {msg}")
+
+        # 检查音频时长限制
+        valid, duration_msg, file_paths = validate_audio_duration(file_paths)
+        if not valid:
+            return f"❌ {duration_msg}", "", None, None
+
+        if duration_msg:
+            log(f"⚠️ {duration_msg}")
+
+        # 创建临时工作空间
+        workspace = create_temp_workspace()
+        log(f"🔧 创建工作空间: {workspace}")
+
         if is_cancelled():
             return "⚠️ 任务已取消", "任务在开始处理前被取消", None, None
 
@@ -636,9 +635,7 @@ def process_make_voicebank(
     except Exception as e:
         logger.error(f"制作音源失败: {e}", exc_info=True)
         return f"❌ 处理失败: {e}", "\n".join(logs), None, None
-    
     finally:
-        # 清理工作空间（保留zip文件）
         cleanup_workspace(workspace)
         TASK_MANAGER.finish_task(task.task_id)
 
@@ -749,8 +746,9 @@ def process_export_voicebank(
     task = TASK_MANAGER.start_task("export", session_id)
     if not task:
         return f"❌ 服务繁忙，当前并发已达上限（{CloudConfig.MAX_CONCURRENT_JOBS}）", "", None
-    
     logs = []
+    workspace = None
+
     def log(msg):
         logs.append(msg)
         logger.info(msg)
@@ -758,28 +756,28 @@ def process_export_voicebank(
 
     def is_cancelled() -> bool:
         return TASK_MANAGER.should_cancel(task.task_id)
-    
-    # 验证输入
-    valid, msg, source_name = validate_voicebank_zip(zip_file)
-    if not valid:
-        return f"❌ {msg}", "", None
 
-    source_name = sanitize_source_name(source_name or "") or "voicebank"
-    
-    log(f"📦 {msg}")
-    log(f"📝 音源名称: {source_name}")
-    
-    # 解析选项
     try:
-        options = json.loads(options_json) if options_json else {}
-    except json.JSONDecodeError:
-        options = {}
-    
-    # 创建临时工作空间
-    workspace = create_temp_workspace()
-    log(f"🔧 创建工作空间")
-    
-    try:
+        # 验证输入
+        valid, msg, source_name = validate_voicebank_zip(zip_file)
+        if not valid:
+            return f"❌ {msg}", "", None
+
+        source_name = sanitize_source_name(source_name or "") or "voicebank"
+
+        log(f"📦 {msg}")
+        log(f"📝 音源名称: {source_name}")
+
+        # 解析选项
+        try:
+            options = json.loads(options_json) if options_json else {}
+        except json.JSONDecodeError:
+            options = {}
+
+        # 创建临时工作空间
+        workspace = create_temp_workspace()
+        log(f"🔧 创建工作空间")
+
         if is_cancelled():
             return "⚠️ 任务已取消", "任务在开始处理前被取消", None
 
@@ -889,7 +887,6 @@ def process_export_voicebank(
     except Exception as e:
         logger.error(f"导出失败: {e}", exc_info=True)
         return f"❌ 处理失败: {e}", "\n".join(logs), None
-    
     finally:
         cleanup_workspace(workspace)
         TASK_MANAGER.finish_task(task.task_id)
@@ -980,10 +977,9 @@ def process_mfa_realign(
     task = TASK_MANAGER.start_task("mfa", session_id)
     if not task:
         return f"❌ 服务繁忙，当前并发已达上限（{CloudConfig.MAX_CONCURRENT_JOBS}）", "", None
-    
     logs = []
     workspace = None
-    
+
     def log(msg):
         logs.append(msg)
         logger.info(msg)
@@ -991,24 +987,24 @@ def process_mfa_realign(
 
     def is_cancelled() -> bool:
         return TASK_MANAGER.should_cancel(task.task_id)
-    
-    # 验证输入
-    if not zip_file:
-        return "❌ 请上传音源压缩包", "", None
-    
-    zip_path = zip_file.name if hasattr(zip_file, 'name') else str(zip_file)
-    
-    # 检查 MFA 是否可用
-    if not check_mfa_available():
-        return "❌ MFA 不可用，无法执行对齐", "请检查 MFA 环境配置", None
-    
-    log("📦 开始处理音源包...")
-    
-    # 创建临时工作空间
-    workspace = create_temp_workspace()
-    log(f"🔧 创建工作空间")
-    
+
     try:
+        # 验证输入
+        if not zip_file:
+            return "❌ 请上传音源压缩包", "", None
+
+        zip_path = zip_file.name if hasattr(zip_file, 'name') else str(zip_file)
+
+        # 检查 MFA 是否可用
+        if not check_mfa_available():
+            return "❌ MFA 不可用，无法执行对齐", "请检查 MFA 环境配置", None
+
+        log("📦 开始处理音源包...")
+
+        # 创建临时工作空间
+        workspace = create_temp_workspace()
+        log(f"🔧 创建工作空间")
+
         if is_cancelled():
             return "⚠️ 任务已取消", "任务在开始处理前被取消", None
 
@@ -1180,7 +1176,6 @@ def process_mfa_realign(
     except Exception as e:
         logger.error(f"MFA 补对齐失败: {e}", exc_info=True)
         return f"❌ 处理失败: {e}", "\n".join(logs), None
-    
     finally:
         cleanup_workspace(workspace)
         TASK_MANAGER.finish_task(task.task_id)
@@ -1401,6 +1396,7 @@ def create_cloud_ui():
                     value=get_concurrency_status(),
                     elem_id="concurrency-status"
                 )
+                concurrency_timer = gr.Timer(2.0)
 
         with gr.Row():
             cancel_jobs_btn = gr.Button("🛑 取消当前会话任务", variant="stop")
@@ -1885,6 +1881,11 @@ def create_cloud_ui():
 
         # 页面加载时刷新并发状态
         app.load(
+            fn=get_concurrency_status,
+            outputs=[concurrency_display]
+        )
+
+        concurrency_timer.tick(
             fn=get_concurrency_status,
             outputs=[concurrency_display]
         )
