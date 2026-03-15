@@ -138,19 +138,45 @@ def setup_mfa_linux():
     """Linux 环境下安装 MFA（优先使用 pip，避免外链超时）"""
     import shutil
     import importlib.util
+
+    def _run_cmd_ok(cmd, timeout=30):
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return result.returncode == 0, (result.stdout or result.stderr or "").strip()
+        except Exception as e:
+            return False, str(e)
     
     def verify_mfa_working():
         """验证 MFA 是否能正常工作（包括 kalpy 依赖）"""
-        try:
-            result = subprocess.run(
-                ["mfa", "version"],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            return result.returncode == 0
-        except Exception:
-            return False
+        commands = [
+            ["mfa", "version"],
+            ["mfa", "--version"],
+            ["mfa", "--help"],
+            [sys.executable, "-m", "montreal_forced_aligner", "version"],
+            [sys.executable, "-m", "montreal_forced_aligner", "--help"],
+        ]
+
+        py_bin_dir = Path(sys.executable).parent
+        mfa_bin = py_bin_dir / "mfa"
+        if mfa_bin.exists():
+            commands.insert(0, [str(mfa_bin), "version"])
+            commands.insert(1, [str(mfa_bin), "--version"])
+            commands.insert(2, [str(mfa_bin), "--help"])
+
+        for cmd in commands:
+            ok, output = _run_cmd_ok(cmd)
+            if ok:
+                logger.info(f"MFA 验证命令通过: {' '.join(cmd)}")
+                return True
+
+        # 仅打印最后一次输出的片段，避免日志过长
+        logger.warning("MFA 验证命令均未通过，可能是入口脚本未加入 PATH 或包入口形式差异")
+        return False
     
     # 检查 mfa 是否已可用
     if shutil.which("mfa") and verify_mfa_working():
@@ -184,6 +210,11 @@ def setup_mfa_linux():
             if candidate_mfa.exists() and str(candidate_dir) not in os.environ.get("PATH", ""):
                 os.environ["PATH"] = f"{candidate_dir}:{os.environ.get('PATH', '')}"
                 logger.info(f"已将 {candidate_dir} 加入 PATH")
+
+        # 再次验证，允许 PATH 更新后生效
+        if not verify_mfa_working():
+            logger.error("MFA 安装后验证失败（命令入口不可用）")
+            sys.exit(1)
         
         # 2. 安装中文/日语分词依赖（无论新装还是已有环境都需要检查）
         
