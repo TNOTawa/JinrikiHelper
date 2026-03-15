@@ -9,7 +9,6 @@ import sys
 import subprocess
 import platform
 import logging
-import time
 from pathlib import Path
 
 logging.basicConfig(
@@ -136,7 +135,7 @@ def setup_environment():
 
 
 def setup_mfa_linux():
-    """Linux 环境下安装 MFA（使用 micromamba），失败则退出程序"""
+    """Linux 环境下安装 MFA（优先使用 pip，避免外链超时）"""
     import shutil
     import importlib.util
     
@@ -158,174 +157,35 @@ def setup_mfa_linux():
         logger.info("MFA 已安装且工作正常")
         return
     
-    logger.info("MFA 不可用，优先尝试 pip 安装，再回退 micromamba...")
-    
-    # micromamba 安装路径（按进程隔离，避免并发启动导致 Text file busy）
-    mamba_root = Path(f"/tmp/micromamba-{os.getpid()}")
-    mamba_bin = mamba_root / "bin" / "micromamba"
-    mfa_env = mamba_root / "envs" / "mfa"
-    mfa_bin_dir = None
-    using_mamba_env = False
-
-    def run_mamba(args, env, timeout, check=True):
-        """执行 micromamba，遇到 ETXTBSY 时重试"""
-        last_error = None
-        for i in range(3):
-            try:
-                return subprocess.run(
-                    [str(mamba_bin)] + args,
-                    env=env,
-                    check=check,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-            except OSError as e:
-                # Linux ETXTBSY = 26: 可执行文件正在被写入，短暂等待后重试
-                if getattr(e, "errno", None) == 26:
-                    last_error = e
-                    wait_sec = 2 + i * 2
-                    logger.warning(f"micromamba 文件繁忙，{wait_sec}s 后重试 ({i + 1}/3)")
-                    time.sleep(wait_sec)
-                    continue
-                raise
-        if last_error:
-            raise last_error
-
-    def ensure_micromamba_downloaded() -> None:
-        """下载 micromamba，支持多种方式重试，降低云端网络抖动影响"""
-        if mamba_bin.exists():
-            return
-
-        mamba_root.mkdir(parents=True, exist_ok=True)
-
-        download_attempts = [
-            {
-                "name": "micro.mamba.pm (curl)",
-                "cmd": [
-                    "bash", "-lc",
-                    f"curl --retry 3 --retry-delay 2 -fLsS https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C {mamba_root} bin/micromamba"
-                ],
-                "timeout": 420,
-            },
-            {
-                "name": "micro.mamba.pm (wget)",
-                "cmd": [
-                    "bash", "-lc",
-                    f"wget -qO- https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C {mamba_root} bin/micromamba"
-                ],
-                "timeout": 420,
-            },
-            {
-                "name": "GitHub release fallback",
-                "cmd": [
-                    "bash", "-lc",
-                    f"mkdir -p {mamba_root}/bin && curl --retry 3 --retry-delay 2 -fLsS -o {mamba_bin} https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-linux-64 && chmod +x {mamba_bin}"
-                ],
-                "timeout": 420,
-            },
-        ]
-
-        last_error = ""
-        for attempt in download_attempts:
-            logger.info(f"下载 micromamba 尝试: {attempt['name']}")
-            try:
-                result = subprocess.run(
-                    attempt["cmd"],
-                    capture_output=True,
-                    text=True,
-                    timeout=attempt["timeout"],
-                    check=True,
-                )
-                if mamba_bin.exists():
-                    logger.info("micromamba 下载完成")
-                    return
-                last_error = (result.stderr or result.stdout or "下载结束但未生成可执行文件")[-500:]
-            except subprocess.TimeoutExpired as e:
-                last_error = f"超时: {e}"
-                logger.warning(f"{attempt['name']} 下载超时")
-            except subprocess.CalledProcessError as e:
-                last_error = (e.stderr or e.stdout or str(e))[-500:]
-                logger.warning(f"{attempt['name']} 下载失败")
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"{attempt['name']} 下载异常: {e}")
-
-        raise RuntimeError(f"micromamba 下载失败: {last_error}")
+    logger.info("MFA 不可用，Linux 下使用 pip 直接安装（跳过 micromamba 外链）...")
     
     try:
-        # 1. 先尝试 pip 直接安装（创空间通常已配置可用 pip 源）
-        logger.info("优先尝试 pip 安装 MFA...")
+        # 1. 使用当前 Python 环境直接安装 MFA，避免外链下载 micromamba
+        logger.info("使用 pip 安装 MFA...")
         pip_result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--no-cache-dir", "montreal-forced-aligner"],
             capture_output=True,
             text=True,
             timeout=1800,
+            check=False,
         )
-        if pip_result.returncode == 0 and verify_mfa_working():
-            logger.info("pip 安装 MFA 成功")
-            mfa_path = shutil.which("mfa")
-            if mfa_path:
-                mfa_bin_dir = Path(mfa_path).parent
-        else:
-            stderr_tail = (pip_result.stderr or "")[-500:]
-            logger.warning(f"pip 安装 MFA 失败或验证未通过，回退 micromamba。错误: {stderr_tail}")
+        if pip_result.returncode != 0:
+            stderr_tail = (pip_result.stderr or "")[-800:]
+            logger.error(f"pip 安装 MFA 失败: {stderr_tail}")
+            sys.exit(1)
 
-        # 2. pip 不可用时，回退到 micromamba
-        if not verify_mfa_working():
-            # 安装 micromamba（如果不存在）
-            if not mamba_bin.exists():
-                logger.info("下载 micromamba...")
-                ensure_micromamba_downloaded()
+        logger.info("pip 安装 MFA 完成")
 
-            # 使用 micromamba 创建环境并安装 MFA
-            mfa_bin_path = mfa_env / "bin" / "mfa"
-            mfa_bin_dir = mfa_env / "bin"
-            need_install = not mfa_bin_path.exists()
-
-            # 如果 mfa 存在，先将其加入 PATH 再验证
-            if mfa_bin_path.exists():
-                # 临时加入 PATH 以便验证
-                old_path = os.environ.get("PATH", "")
-                os.environ["PATH"] = f"{mfa_bin_dir}:{old_path}"
-
-                if not verify_mfa_working():
-                    logger.info("检测到损坏的 MFA 环境，删除重建...")
-                    os.environ["PATH"] = old_path  # 恢复 PATH
-                    import shutil as sh
-                    sh.rmtree(mfa_env, ignore_errors=True)
-                    need_install = True
-                else:
-                    logger.info("MFA 环境验证通过，无需重新安装")
-
-            if need_install:
-                logger.info("使用 micromamba 安装 MFA...")
-                env = os.environ.copy()
-                env["MAMBA_ROOT_PREFIX"] = str(mamba_root)
-
-                # 创建环境并安装 MFA（指定 Python 3.11）
-                run_mamba([
-                    "create", "-n", "mfa",
-                    "-c", "conda-forge",
-                    "python=3.11",
-                    "montreal-forced-aligner",
-                    "-y"
-                ], env=env, check=True, timeout=1800)
-
-                # 更新确保使用 CPU 版本的 kaldi
-                run_mamba([
-                    "install", "-n", "mfa",
-                    "-c", "conda-forge",
-                    "kalpy", "kaldi=*=cpu*",
-                    "-y"
-                ], env=env, timeout=900)
-
-                logger.info("MFA 安装完成")
-
-            using_mamba_env = True
+        # 某些环境下 console_scripts 目录未在 PATH，补一层兜底
+        mfa_path = shutil.which("mfa")
+        if not mfa_path:
+            candidate_dir = Path(sys.executable).parent
+            candidate_mfa = candidate_dir / "mfa"
+            if candidate_mfa.exists() and str(candidate_dir) not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = f"{candidate_dir}:{os.environ.get('PATH', '')}"
+                logger.info(f"已将 {candidate_dir} 加入 PATH")
         
-        # 3. 安装中文/日语分词依赖（无论新装还是已有环境都需要检查）
-        pip_path = mfa_env / "bin" / "pip"
+        # 2. 安装中文/日语分词依赖（无论新装还是已有环境都需要检查）
         
         # 设置 pkuseg 模型目录到持久化路径（避免每次重启重新下载）
         pkuseg_home = PERSISTENT_MODELS_DIR / "pkuseg" if PERSISTENT_MODELS_DIR.parent.exists() else Path("/root/.pkuseg")
@@ -335,18 +195,11 @@ def setup_mfa_linux():
         has_pkuseg = importlib.util.find_spec("spacy_pkuseg") is not None
         if not has_pkuseg:
             logger.info("安装中文/日语分词依赖...")
-            if using_mamba_env and pip_path.exists():
-                dep_cmd = [
-                    str(pip_path), "install",
-                    "spacy-pkuseg", "dragonmapper", "hanziconv",
-                    "sudachipy", "sudachidict_core"
-                ]
-            else:
-                dep_cmd = [
-                    sys.executable, "-m", "pip", "install", "--no-cache-dir",
-                    "spacy-pkuseg", "dragonmapper", "hanziconv",
-                    "sudachipy", "sudachidict_core"
-                ]
+            dep_cmd = [
+                sys.executable, "-m", "pip", "install", "--no-cache-dir",
+                "spacy-pkuseg", "dragonmapper", "hanziconv",
+                "sudachipy", "sudachidict_core"
+            ]
 
             result = subprocess.run(dep_cmd, capture_output=True, text=True, timeout=600)
             if result.returncode != 0:
@@ -358,12 +211,7 @@ def setup_mfa_linux():
             
             # pkuseg 模型下载移到 download_pkuseg_models() 独立函数中
         
-        # 4. 确保 MFA 环境的 bin 目录在 PATH 中
-        if mfa_bin_dir and mfa_bin_dir.exists() and str(mfa_bin_dir) not in os.environ.get("PATH", ""):
-            os.environ["PATH"] = f"{mfa_bin_dir}:{os.environ.get('PATH', '')}"
-            logger.info(f"已将 {mfa_bin_dir} 加入 PATH")
-
-        # 验证安装
+        # 3. 验证安装
         if verify_mfa_working():
             logger.info("MFA 验证通过")
         else:
