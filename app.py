@@ -162,19 +162,73 @@ def setup_mfa_linux():
     mamba_root = Path("/tmp/micromamba")
     mamba_bin = mamba_root / "bin" / "micromamba"
     mfa_env = mamba_root / "envs" / "mfa"
+
+    def ensure_micromamba_downloaded() -> None:
+        """下载 micromamba，支持多种方式重试，降低云端网络抖动影响"""
+        if mamba_bin.exists():
+            return
+
+        mamba_root.mkdir(parents=True, exist_ok=True)
+
+        download_attempts = [
+            {
+                "name": "micro.mamba.pm (curl)",
+                "cmd": [
+                    "bash", "-lc",
+                    f"curl --retry 3 --retry-delay 2 -fLsS https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C {mamba_root} bin/micromamba"
+                ],
+                "timeout": 420,
+            },
+            {
+                "name": "micro.mamba.pm (wget)",
+                "cmd": [
+                    "bash", "-lc",
+                    f"wget -qO- https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C {mamba_root} bin/micromamba"
+                ],
+                "timeout": 420,
+            },
+            {
+                "name": "GitHub release fallback",
+                "cmd": [
+                    "bash", "-lc",
+                    f"mkdir -p {mamba_root}/bin && curl --retry 3 --retry-delay 2 -fLsS -o {mamba_bin} https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-linux-64 && chmod +x {mamba_bin}"
+                ],
+                "timeout": 420,
+            },
+        ]
+
+        last_error = ""
+        for attempt in download_attempts:
+            logger.info(f"下载 micromamba 尝试: {attempt['name']}")
+            try:
+                result = subprocess.run(
+                    attempt["cmd"],
+                    capture_output=True,
+                    text=True,
+                    timeout=attempt["timeout"],
+                    check=True,
+                )
+                if mamba_bin.exists():
+                    logger.info("micromamba 下载完成")
+                    return
+                last_error = (result.stderr or result.stdout or "下载结束但未生成可执行文件")[-500:]
+            except subprocess.TimeoutExpired as e:
+                last_error = f"超时: {e}"
+                logger.warning(f"{attempt['name']} 下载超时")
+            except subprocess.CalledProcessError as e:
+                last_error = (e.stderr or e.stdout or str(e))[-500:]
+                logger.warning(f"{attempt['name']} 下载失败")
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"{attempt['name']} 下载异常: {e}")
+
+        raise RuntimeError(f"micromamba 下载失败: {last_error}")
     
     try:
         # 1. 安装 micromamba（如果不存在）
         if not mamba_bin.exists():
             logger.info("下载 micromamba...")
-            mamba_root.mkdir(parents=True, exist_ok=True)
-            
-            # 下载并安装 micromamba
-            subprocess.run([
-                "bash", "-c",
-                f'curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C {mamba_root} bin/micromamba'
-            ], check=True, capture_output=True, timeout=120)
-            logger.info("micromamba 下载完成")
+            ensure_micromamba_downloaded()
         
         # 2. 使用 micromamba 创建环境并安装 MFA
         mfa_bin_path = mfa_env / "bin" / "mfa"
@@ -208,7 +262,7 @@ def setup_mfa_linux():
                 "python=3.11",
                 "montreal-forced-aligner",
                 "-y"
-            ], env=env, check=True, capture_output=True, text=True, timeout=600)
+            ], env=env, check=True, capture_output=True, text=True, timeout=1800)
             
             # 更新确保使用 CPU 版本的 kaldi
             subprocess.run([
@@ -216,7 +270,7 @@ def setup_mfa_linux():
                 "-c", "conda-forge",
                 "kalpy", "kaldi=*=cpu*",
                 "-y"
-            ], env=env, capture_output=True, text=True, timeout=300)
+            ], env=env, capture_output=True, text=True, timeout=900)
             
             logger.info("MFA 安装完成")
         
