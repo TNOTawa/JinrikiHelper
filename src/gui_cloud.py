@@ -17,7 +17,10 @@ import zipfile
 import shutil
 import uuid
 import threading
+import time
+import re
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple, Any
 
 # 配置日志
@@ -28,31 +31,134 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== 并发计数器 ====================
-_concurrency_lock = threading.Lock()
-_current_concurrency = 0
+@dataclass
+class TaskToken:
+    """任务令牌（用于取消/超时/状态跟踪）"""
+    task_id: str
+    session_id: str
+    kind: str
+    started_at: float
+    last_touch: float
+    cancel_event: threading.Event
 
 
-def increment_concurrency():
-    """增加并发计数"""
-    global _current_concurrency
-    with _concurrency_lock:
-        _current_concurrency += 1
-        return _current_concurrency
+class CloudTaskManager:
+    """云端任务管理器：有界并发 + 会话取消 + 滞留回收"""
 
+    def __init__(self, max_jobs: int, max_job_seconds: int):
+        self.max_jobs = max(1, int(max_jobs))
+        self.max_job_seconds = max(60, int(max_job_seconds))
+        self._lock = threading.Lock()
+        self._tasks: Dict[str, TaskToken] = {}
+        self._session_index: Dict[str, set] = {}
+        self._watchdog = threading.Thread(
+            target=self._watchdog_loop,
+            name="cloud-task-watchdog",
+            daemon=True
+        )
+        self._watchdog.start()
 
-def decrement_concurrency():
-    """减少并发计数"""
-    global _current_concurrency
-    with _concurrency_lock:
-        _current_concurrency = max(0, _current_concurrency - 1)
-        return _current_concurrency
+    def start_task(self, kind: str, session_id: Optional[str]) -> Optional[TaskToken]:
+        sid = (session_id or "").strip() or uuid.uuid4().hex[:8]
+        now = time.time()
+        with self._lock:
+            active = len(self._tasks)
+            if active >= self.max_jobs:
+                return None
+
+            task_id = uuid.uuid4().hex[:10]
+            token = TaskToken(
+                task_id=task_id,
+                session_id=sid,
+                kind=kind,
+                started_at=now,
+                last_touch=now,
+                cancel_event=threading.Event()
+            )
+            self._tasks[task_id] = token
+            self._session_index.setdefault(sid, set()).add(task_id)
+            return token
+
+    def finish_task(self, task_id: Optional[str]):
+        if not task_id:
+            return
+        with self._lock:
+            token = self._tasks.pop(task_id, None)
+            if not token:
+                return
+            session_tasks = self._session_index.get(token.session_id)
+            if session_tasks:
+                session_tasks.discard(task_id)
+                if not session_tasks:
+                    self._session_index.pop(token.session_id, None)
+
+    def touch(self, task_id: Optional[str]):
+        if not task_id:
+            return
+        now = time.time()
+        with self._lock:
+            token = self._tasks.get(task_id)
+            if token:
+                token.last_touch = now
+
+    def should_cancel(self, task_id: Optional[str]) -> bool:
+        if not task_id:
+            return False
+        with self._lock:
+            token = self._tasks.get(task_id)
+            return bool(token and token.cancel_event.is_set())
+
+    def cancel_session(self, session_id: Optional[str]) -> int:
+        sid = (session_id or "").strip()
+        if not sid:
+            return 0
+        cancelled = 0
+        with self._lock:
+            for task_id in list(self._session_index.get(sid, set())):
+                token = self._tasks.get(task_id)
+                if token and not token.cancel_event.is_set():
+                    token.cancel_event.set()
+                    cancelled += 1
+        return cancelled
+
+    def get_status_text(self) -> str:
+        with self._lock:
+            active = len(self._tasks)
+            running = [f"{t.kind}:{t.task_id}" for t in self._tasks.values()]
+        if running:
+            detail = " | ".join(running[:3])
+            if len(running) > 3:
+                detail += f" ...共{len(running)}个"
+            return f"当前并发数：{active}/{self.max_jobs}\\n运行中：{detail}"
+        return f"当前并发数：{active}/{self.max_jobs}"
+
+    def _watchdog_loop(self):
+        while True:
+            time.sleep(5)
+            now = time.time()
+            with self._lock:
+                for token in self._tasks.values():
+                    runtime = now - token.started_at
+                    if runtime > self.max_job_seconds and not token.cancel_event.is_set():
+                        token.cancel_event.set()
+                        logger.warning(
+                            "任务超时，已标记取消: %s (%s, %.1fs)",
+                            token.task_id, token.kind, runtime
+                        )
 
 
 def get_concurrency_status() -> str:
     """获取当前并发状态文本"""
-    with _concurrency_lock:
-        return f"当前并发数：{_current_concurrency}"
+    return TASK_MANAGER.get_status_text()
+
+
+def sanitize_source_name(name: Optional[str]) -> Optional[str]:
+    """净化用户输入的音源名，避免路径逃逸与非法文件名。"""
+    cleaned = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]", "_", (name or "").strip())
+    cleaned = cleaned.strip("._- ")
+    if not cleaned:
+        return None
+    return cleaned[:64]
 
 
 def safe_gradio_handler(func):
@@ -122,6 +228,16 @@ class CloudConfig:
     # 语言选项
     LANGUAGES = ["chinese", "japanese"]
 
+    # 并发与任务监控
+    MAX_CONCURRENT_JOBS = int(os.environ.get("JINRIKI_MAX_CONCURRENT_JOBS", "2"))
+    MAX_JOB_SECONDS = int(os.environ.get("JINRIKI_MAX_JOB_SECONDS", "1800"))
+
+
+TASK_MANAGER = CloudTaskManager(
+    max_jobs=CloudConfig.MAX_CONCURRENT_JOBS,
+    max_job_seconds=CloudConfig.MAX_JOB_SECONDS
+)
+
 
 def create_temp_workspace() -> str:
     """创建临时工作空间"""
@@ -165,10 +281,32 @@ def create_zip(source_dir: str, zip_name: str) -> Optional[str]:
 
 
 def extract_zip(zip_path: str, target_dir: str) -> Tuple[bool, str]:
-    """解压 zip 文件"""
+    """安全解压 zip 文件（防 Zip Slip）"""
     try:
+        target_real = os.path.realpath(target_dir)
+        os.makedirs(target_real, exist_ok=True)
+
         with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(target_dir)
+            for info in zf.infolist():
+                member = info.filename.replace('\\\\', '/')
+                if member.startswith('/') or member.startswith('..'):
+                    return False, f"解压失败: 非法路径 {member}"
+
+                if '..' in Path(member).parts:
+                    return False, f"解压失败: 非法路径 {member}"
+
+                out_path = os.path.realpath(os.path.join(target_real, member))
+                if out_path != target_real and not out_path.startswith(target_real + os.sep):
+                    return False, f"解压失败: 路径越界 {member}"
+
+                if info.is_dir():
+                    os.makedirs(out_path, exist_ok=True)
+                    continue
+
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                with zf.open(info, 'r') as src, open(out_path, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+
         return True, "解压成功"
     except Exception as e:
         return False, f"解压失败: {e}"
@@ -191,6 +329,14 @@ def check_mfa_available() -> bool:
     """检查 MFA 是否可用"""
     from src.mfa_runner import check_mfa_available as _check
     return _check()
+
+
+def cancel_current_session_tasks(session_id: Optional[str]) -> str:
+    """取消当前会话的运行中任务"""
+    cancelled = TASK_MANAGER.cancel_session(session_id)
+    if cancelled <= 0:
+        return "⚠️ 当前会话没有可取消任务"
+    return f"🛑 已请求取消 {cancelled} 个任务"
 
 
 # ==================== 制作音源功能 ====================
@@ -304,6 +450,7 @@ def process_make_voicebank(
     source_name: str,
     language: str,
     whisper_model: str,
+    session_id: Optional[str] = None,
     progress=gr.Progress()
 ) -> Tuple[str, str, Optional[str], Optional[str]]:
     """
@@ -311,8 +458,9 @@ def process_make_voicebank(
     
     返回: (状态, 日志, 下载文件路径, 会话存储的音源包路径)
     """
-    # 增加并发计数
-    increment_concurrency()
+    task = TASK_MANAGER.start_task("make", session_id)
+    if not task:
+        return f"❌ 服务繁忙，当前并发已达上限（{CloudConfig.MAX_CONCURRENT_JOBS}）", "", None, None
     
     logs = []
     workspace = None
@@ -320,25 +468,26 @@ def process_make_voicebank(
     def log(msg):
         logs.append(msg)
         logger.info(msg)
+        TASK_MANAGER.touch(task.task_id)
+
+    def is_cancelled() -> bool:
+        return TASK_MANAGER.should_cancel(task.task_id)
     
     try:
         # 导入依赖（放在 try 块内以捕获导入错误）
         from src.pipeline import PipelineConfig, VoiceBankPipeline
     except Exception as e:
         logger.error(f"导入模块失败: {e}", exc_info=True)
-        decrement_concurrency()
         return f"❌ 系统错误: 模块加载失败", str(e), None, None
     
     # 验证输入
-    if not source_name or not source_name.strip():
-        decrement_concurrency()
+    sanitized_name = sanitize_source_name(source_name)
+    if not sanitized_name:
         return "❌ 请输入音源名称", "", None, None
-    
-    source_name = source_name.strip()
+    source_name = sanitized_name
     
     valid, msg, file_paths = validate_audio_upload(audio_files)
     if not valid:
-        decrement_concurrency()
         return f"❌ {msg}", "", None, None
     
     log(f"📁 {msg}")
@@ -346,7 +495,6 @@ def process_make_voicebank(
     # 检查音频时长限制
     valid, duration_msg, file_paths = validate_audio_duration(file_paths)
     if not valid:
-        decrement_concurrency()
         return f"❌ {duration_msg}", "", None, None
     
     if duration_msg:
@@ -357,6 +505,9 @@ def process_make_voicebank(
     log(f"🔧 创建工作空间: {workspace}")
     
     try:
+        if is_cancelled():
+            return "⚠️ 任务已取消", "任务在开始处理前被取消", None, None
+
         # 准备输入目录
         input_dir = os.path.join(workspace, "input")
         bank_dir = os.path.join(workspace, "bank")
@@ -367,6 +518,8 @@ def process_make_voicebank(
         progress(0.05, desc="复制音频文件...")
         copied_count = 0
         for src_path in file_paths:
+            if is_cancelled():
+                return "⚠️ 任务已取消", "\n".join(logs), None, None
             # 检查源文件是否存在
             if not os.path.exists(src_path):
                 log(f"⚠️ 文件不存在或已被清理: {src_path}")
@@ -422,7 +575,8 @@ def process_make_voicebank(
             whisper_model=whisper_model_name,
             mfa_dict_path=dict_path,
             mfa_model_path=acoustic_path,
-            language=language
+            language=language,
+            cancel_checker=is_cancelled
         )
         
         pipeline = VoiceBankPipeline(config, log)
@@ -435,6 +589,9 @@ def process_make_voicebank(
         if not success:
             return f"❌ 预处理失败: {msg}", "\n".join(logs), None, None
         log(f"✅ {msg}")
+
+        if is_cancelled():
+            return "⚠️ 任务已取消", "\n".join(logs), None, None
         
         # 步骤1: MFA对齐
         progress(0.6, desc="MFA语音对齐...")
@@ -472,20 +629,18 @@ def process_make_voicebank(
             log(f"📦 已打包: {os.path.basename(zip_path)}")
             progress(1.0, desc="完成")
             # 返回路径到会话状态，供导出页面使用
-            decrement_concurrency()
             return "✅ 音源制作完成", "\n".join(logs), zip_path, zip_path
         else:
-            decrement_concurrency()
             return "❌ 打包失败", "\n".join(logs), None, None
         
     except Exception as e:
         logger.error(f"制作音源失败: {e}", exc_info=True)
-        decrement_concurrency()
         return f"❌ 处理失败: {e}", "\n".join(logs), None, None
     
     finally:
         # 清理工作空间（保留zip文件）
         cleanup_workspace(workspace)
+        TASK_MANAGER.finish_task(task.task_id)
 
 
 # ==================== 导出音源功能 ====================
@@ -540,6 +695,7 @@ def validate_voicebank_zip_path(zip_path: str) -> Tuple[bool, str, Optional[str]
             
             if not source_name:
                 source_name = Path(zip_path).stem.replace('_音源数据', '')
+            source_name = sanitize_source_name(source_name) or "voicebank"
             
             info_parts = []
             if has_slices:
@@ -577,6 +733,7 @@ def process_export_voicebank(
     zip_file,
     plugin_name: str,
     options_json: str,
+    session_id: Optional[str] = None,
     progress=gr.Progress()
 ) -> Tuple[str, str, Optional[str]]:
     """
@@ -589,19 +746,25 @@ def process_export_voicebank(
     
     返回: (状态, 日志, 下载文件路径)
     """
-    # 增加并发计数
-    increment_concurrency()
+    task = TASK_MANAGER.start_task("export", session_id)
+    if not task:
+        return f"❌ 服务繁忙，当前并发已达上限（{CloudConfig.MAX_CONCURRENT_JOBS}）", "", None
     
     logs = []
     def log(msg):
         logs.append(msg)
         logger.info(msg)
+        TASK_MANAGER.touch(task.task_id)
+
+    def is_cancelled() -> bool:
+        return TASK_MANAGER.should_cancel(task.task_id)
     
     # 验证输入
     valid, msg, source_name = validate_voicebank_zip(zip_file)
     if not valid:
-        decrement_concurrency()
         return f"❌ {msg}", "", None
+
+    source_name = sanitize_source_name(source_name or "") or "voicebank"
     
     log(f"📦 {msg}")
     log(f"📝 音源名称: {source_name}")
@@ -617,6 +780,9 @@ def process_export_voicebank(
     log(f"🔧 创建工作空间")
     
     try:
+        if is_cancelled():
+            return "⚠️ 任务已取消", "任务在开始处理前被取消", None
+
         zip_path = zip_file.name if hasattr(zip_file, 'name') else str(zip_file)
         
         # 解压音源包
@@ -703,6 +869,9 @@ def process_export_voicebank(
         
         if not os.path.exists(export_dir):
             return "❌ 未找到导出结果", "\n".join(logs), None
+
+        if is_cancelled():
+            return "⚠️ 任务已取消", "\n".join(logs), None
         
         # 命名格式: [音源名称]_[插件标识]
         zip_name = f"{source_name}_{export_id}"
@@ -713,19 +882,17 @@ def process_export_voicebank(
             file_count = len([f for f in os.listdir(export_dir) if f.endswith(('.wav', '.ini'))])
             log(f"📦 已打包: {file_count} 个文件")
             progress(1.0, desc="完成")
-            decrement_concurrency()
             return "✅ 导出完成", "\n".join(logs), result_zip
         else:
-            decrement_concurrency()
             return "❌ 打包失败", "\n".join(logs), None
         
     except Exception as e:
         logger.error(f"导出失败: {e}", exc_info=True)
-        decrement_concurrency()
         return f"❌ 处理失败: {e}", "\n".join(logs), None
     
     finally:
         cleanup_workspace(workspace)
+        TASK_MANAGER.finish_task(task.task_id)
 
 
 # ==================== MFA补对齐功能 ====================
@@ -798,6 +965,7 @@ def validate_mfa_voicebank(zip_file) -> str:
 def process_mfa_realign(
     zip_file,
     language: str,
+    session_id: Optional[str] = None,
     progress=gr.Progress()
 ) -> Tuple[str, str, Optional[str]]:
     """
@@ -809,8 +977,9 @@ def process_mfa_realign(
     
     返回: (状态, 日志, 下载文件路径)
     """
-    # 增加并发计数
-    increment_concurrency()
+    task = TASK_MANAGER.start_task("mfa", session_id)
+    if not task:
+        return f"❌ 服务繁忙，当前并发已达上限（{CloudConfig.MAX_CONCURRENT_JOBS}）", "", None
     
     logs = []
     workspace = None
@@ -818,17 +987,19 @@ def process_mfa_realign(
     def log(msg):
         logs.append(msg)
         logger.info(msg)
+        TASK_MANAGER.touch(task.task_id)
+
+    def is_cancelled() -> bool:
+        return TASK_MANAGER.should_cancel(task.task_id)
     
     # 验证输入
     if not zip_file:
-        decrement_concurrency()
         return "❌ 请上传音源压缩包", "", None
     
     zip_path = zip_file.name if hasattr(zip_file, 'name') else str(zip_file)
     
     # 检查 MFA 是否可用
     if not check_mfa_available():
-        decrement_concurrency()
         return "❌ MFA 不可用，无法执行对齐", "请检查 MFA 环境配置", None
     
     log("📦 开始处理音源包...")
@@ -838,6 +1009,9 @@ def process_mfa_realign(
     log(f"🔧 创建工作空间")
     
     try:
+        if is_cancelled():
+            return "⚠️ 任务已取消", "任务在开始处理前被取消", None
+
         # 解压音源包
         progress(0.1, desc="解压音源包...")
         
@@ -857,6 +1031,8 @@ def process_mfa_realign(
             
             if not source_name:
                 source_name = Path(zip_path).stem.replace('_音源数据', '')
+
+        source_name = sanitize_source_name(source_name) or "voicebank"
         
         log(f"📝 音源名称: {source_name}")
         
@@ -955,7 +1131,8 @@ def process_mfa_realign(
             model_path=acoustic_path,
             single_speaker=True,
             clean=True,
-            progress_callback=log
+            progress_callback=log,
+            cancel_checker=is_cancelled
         )
         
         if not success:
@@ -996,19 +1173,17 @@ def process_mfa_realign(
         if result_zip:
             log(f"📦 已打包: {os.path.basename(result_zip)}")
             progress(1.0, desc="完成")
-            decrement_concurrency()
             return "✅ MFA 补对齐完成", "\n".join(logs), result_zip
         else:
-            decrement_concurrency()
             return "❌ 打包失败", "\n".join(logs), None
         
     except Exception as e:
         logger.error(f"MFA 补对齐失败: {e}", exc_info=True)
-        decrement_concurrency()
         return f"❌ 处理失败: {e}", "\n".join(logs), None
     
     finally:
         cleanup_workspace(workspace)
+        TASK_MANAGER.finish_task(task.task_id)
 
 
 # ==================== 插件选项 UI 生成 ====================
@@ -1055,7 +1230,7 @@ def get_default_options_json(plugin_name: str, plugins_config: Dict) -> str:
     return json.dumps(defaults, ensure_ascii=False)
 
 
-def create_dynamic_plugin_options(plugins: Dict[str, Any], plugins_config: Dict) -> Tuple[Dict[str, Any], callable]:
+def create_dynamic_plugin_options(plugins: Dict[str, Any], plugins_config: Dict) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     创建动态插件选项组件
     
@@ -1213,6 +1388,7 @@ def create_cloud_ui():
         theme=gr.themes.Soft()
     ) as app:
         
+        session_id_state = gr.State(value=uuid.uuid4().hex[:8])
         # 会话状态：存储当前用户制作的音源包路径
         session_voicebank = gr.State(value=None)
         
@@ -1225,6 +1401,10 @@ def create_cloud_ui():
                     value=get_concurrency_status(),
                     elem_id="concurrency-status"
                 )
+
+        with gr.Row():
+            cancel_jobs_btn = gr.Button("🛑 取消当前会话任务", variant="stop")
+            cancel_jobs_msg = gr.Textbox(label="任务控制", interactive=False, value="")
         
         gr.Markdown("语音数据集处理工具 - 自动化制作语音音源库")
         gr.Markdown("> ☁️ 云端版：上传音频 → 自动处理 → 下载结果")
@@ -1381,9 +1561,9 @@ def create_cloud_ui():
                 
                 make_btn.click(
                     fn=process_make_voicebank,
-                    inputs=[audio_upload, make_source_name, make_language, make_whisper],
+                    inputs=[audio_upload, make_source_name, make_language, make_whisper, session_id_state],
                     outputs=[make_status, make_log, make_download, session_voicebank],
-                    concurrency_limit=None  # 无上限并发，云端 CPU 按需分配
+                    concurrency_limit=CloudConfig.MAX_CONCURRENT_JOBS
                 )
             
             # ==================== 导出音源页 ====================
@@ -1530,7 +1710,7 @@ def create_cloud_ui():
                 )
                 
                 # 收集选项并导出
-                def collect_and_export(zip_file, plugin_name, *all_values, progress=gr.Progress()):
+                def collect_and_export(zip_file, plugin_name, session_id, *all_values, progress=gr.Progress()):
                     """收集当前插件的选项并执行导出"""
                     # 根据插件名找到对应的选项配置
                     if plugin_name not in plugins_config:
@@ -1560,7 +1740,7 @@ def create_cloud_ui():
                         current_idx += 1
                     
                     options_json = json.dumps(options, ensure_ascii=False)
-                    return process_export_voicebank(zip_file, plugin_name, options_json, progress)
+                    return process_export_voicebank(zip_file, plugin_name, options_json, session_id, progress)
                 
                 export_btn = gr.Button("📤 开始导出", variant="primary", size="lg")
                 
@@ -1587,9 +1767,9 @@ def create_cloud_ui():
                 
                 export_btn.click(
                     fn=collect_and_export,
-                    inputs=[export_upload, export_plugin] + all_option_components,
+                    inputs=[export_upload, export_plugin, session_id_state] + all_option_components,
                     outputs=[export_status, export_log, export_download],
-                    concurrency_limit=None  # 无上限并发，云端 CPU 按需分配
+                    concurrency_limit=CloudConfig.MAX_CONCURRENT_JOBS
                 )
             
             # ==================== MFA补对齐页 ====================
@@ -1661,9 +1841,9 @@ def create_cloud_ui():
                 
                 mfa_btn.click(
                     fn=process_mfa_realign,
-                    inputs=[mfa_upload, mfa_language],
+                    inputs=[mfa_upload, mfa_language, session_id_state],
                     outputs=[mfa_process_status, mfa_log, mfa_download],
-                    concurrency_limit=None  # 无上限并发，云端 CPU 按需分配
+                    concurrency_limit=CloudConfig.MAX_CONCURRENT_JOBS
                 )
             
             # ==================== 关于页 ====================
@@ -1697,6 +1877,12 @@ def create_cloud_ui():
                 本工具集成 Montreal Forced Aligner (MIT License)
                 """)
         
+        cancel_jobs_btn.click(
+            fn=cancel_current_session_tasks,
+            inputs=[session_id_state],
+            outputs=[cancel_jobs_msg]
+        )
+
         # 页面加载时刷新并发状态
         app.load(
             fn=get_concurrency_status,
@@ -1709,7 +1895,7 @@ def create_cloud_ui():
 def main():
     """云端入口"""
     app = create_cloud_ui()
-    # 启用队列，魔搭CPU按需分配，无需设置并发上限
+    # 启用队列，实际并发由 CloudTaskManager + 事件并发上限共同控制
     app.queue()
     app.launch(
         server_name="0.0.0.0",

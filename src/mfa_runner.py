@@ -9,6 +9,7 @@ import platform
 import shutil
 import subprocess
 import logging
+import time
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -218,7 +219,9 @@ def run_mfa_alignment(
     single_speaker: bool = True,
     clean: bool = True,
     num_jobs: Optional[int] = None,
-    progress_callback: Optional[Callable[[str], None]] = None
+    progress_callback: Optional[Callable[[str], None]] = None,
+    cancel_checker: Optional[Callable[[], bool]] = None,
+    timeout_seconds: Optional[int] = None
 ) -> tuple[bool, str]:
     """
     执行 MFA 对齐
@@ -269,22 +272,25 @@ def run_mfa_alignment(
         return False, f"字典文件不存在: {dict_path}"
     if not os.path.isfile(model_path):
         return False, f"声学模型不存在: {model_path}"
-    
-    # 清理字典文件中的空行（MFA 3.x 不支持空行）
-    log(f"检查字典文件: {dict_path}")
-    removed = _clean_dict_empty_lines(dict_path)
-    if removed > 0:
-        log(f"已清理字典文件中的 {removed} 个无效行")
-    
+
     # 创建输出和临时目录
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(temp_dir, exist_ok=True)
+    
+    # 拷贝字典到会话临时目录后再清理，避免修改共享模型文件
+    temp_dict_path = os.path.join(temp_dir, f"dict_{uuid.uuid4().hex[:8]}.dict")
+    shutil.copy2(dict_path, temp_dict_path)
+
+    log(f"检查字典文件: {temp_dict_path}")
+    removed = _clean_dict_empty_lines(temp_dict_path)
+    if removed > 0:
+        log(f"已清理字典文件中的 {removed} 个无效行")
     
     # 构造命令
     cmd = _get_mfa_command() + [
         "align",
         str(corpus_dir),
-        str(dict_path),
+        str(temp_dict_path),
         str(model_path),
         str(output_dir),
         "--temp_directory", str(temp_dir),
@@ -312,20 +318,49 @@ def run_mfa_alignment(
     log(f"并行进程数: {num_jobs}")
     log(f"输入目录: {corpus_dir}")
     log(f"输出目录: {output_dir}")
+
+    if timeout_seconds is None:
+        timeout_seconds = int(os.environ.get("JINRIKI_MFA_TIMEOUT_SECONDS", "1800"))
     
     try:
         env = _build_mfa_env(isolated_mfa_root)
         
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding='utf-8',
             errors='replace'
         )
-        
-        if result.returncode == 0:
+
+        start_time = time.time()
+        while process.poll() is None:
+            if cancel_checker and cancel_checker():
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                log("MFA 任务已取消")
+                return False, "任务已取消"
+
+            elapsed = time.time() - start_time
+            if elapsed > timeout_seconds:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                msg = f"MFA 执行超时（>{timeout_seconds}秒）"
+                log(msg)
+                return False, msg
+
+            time.sleep(1)
+
+        stdout, stderr = process.communicate()
+        if process.returncode == 0:
             log("MFA 对齐完成!")
             # 清理临时目录（仅清理会话独立目录）
             if "session_" in temp_dir and os.path.exists(temp_dir):
@@ -334,9 +369,9 @@ def run_mfa_alignment(
                     log(f"已清理临时目录: {temp_dir}")
                 except Exception as e:
                     logger.warning(f"清理临时目录失败: {e}")
-            return True, result.stdout
+            return True, stdout
         else:
-            error_msg = result.stderr or result.stdout or "未知错误"
+            error_msg = stderr or stdout or "未知错误"
             log(f"MFA 运行出错: {error_msg}")
             return False, error_msg
             

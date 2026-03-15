@@ -35,6 +35,7 @@ class PipelineConfig:
     single_speaker: bool = True
     clean_mfa_cache: bool = True
     max_samples_per_word: int = 100
+    cancel_checker: Optional[Callable[[], bool]] = None
     
     @property
     def source_dir(self) -> str:
@@ -168,6 +169,14 @@ class VoiceBankPipeline:
         logger.info(msg)
         if self.progress_callback:
             self.progress_callback(msg)
+
+    def _is_cancelled(self) -> bool:
+        checker = self.config.cancel_checker
+        return bool(checker and checker())
+
+    def _check_cancel(self):
+        if self._is_cancelled():
+            raise RuntimeError("任务已取消")
     
     def _ensure_dirs(self):
         """确保目录存在"""
@@ -286,6 +295,7 @@ class VoiceBankPipeline:
         输出: bank/[音源名称]/slices/ 下的 .wav 和 .lab 文件
         """
         try:
+            self._check_cancel()
             self._ensure_dirs()
             self._load_vad_model()
             self._load_whisper_model()
@@ -299,6 +309,7 @@ class VoiceBankPipeline:
             
             all_slices = []
             for idx, audio_file in enumerate(input_files):
+                self._check_cancel()
                 basename = Path(audio_file).stem
                 self._log(f"处理 [{idx+1}/{len(input_files)}]: {basename}")
                 
@@ -307,6 +318,7 @@ class VoiceBankPipeline:
                 
                 # 转录每个切片
                 for slice_path in slices:
+                    self._check_cancel()
                     text = self._transcribe(slice_path)
                     if text:
                         self._write_lab(slice_path, text)
@@ -427,6 +439,7 @@ class VoiceBankPipeline:
         
         output_files = []
         for i, ts in enumerate(timestamps):
+            self._check_cancel()
             # 将16kHz的时间戳转换为44.1kHz的采样点索引
             start = int(ts['start'] * TARGET_SR / 16000)
             end = int(ts['end'] * TARGET_SR / 16000)
@@ -441,6 +454,7 @@ class VoiceBankPipeline:
     
     def _transcribe(self, audio_path: str) -> str:
         """Whisper转录（输入已是44.1kHz，需转为16kHz）"""
+        self._check_cancel()
         import soundfile as sf
         import numpy as np
         import torch
@@ -500,6 +514,7 @@ class VoiceBankPipeline:
         注意: 直接使用中文文本，MFA字典为汉字到音素映射
         """
         try:
+            self._check_cancel()
             os.makedirs(self.config.textgrid_dir, exist_ok=True)
             
             # 调用 MFA 对齐（直接使用中文文本，不转拼音）
@@ -512,7 +527,8 @@ class VoiceBankPipeline:
                 model_path=self.config.mfa_model_path,
                 single_speaker=self.config.single_speaker,
                 clean=self.config.clean_mfa_cache,
-                progress_callback=self.progress_callback
+                progress_callback=self.progress_callback,
+                cancel_checker=self.config.cancel_checker
             )
             
             # 更新元文件（更新TextGrid数量）
