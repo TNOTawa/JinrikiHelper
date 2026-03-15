@@ -9,6 +9,22 @@
       "value": "true"
     },
     {
+      "name": "MODELSCOPE_CACHE",
+      "value": "/home/studio_service/modelscope_cache"
+    },
+    {
+      "name": "HF_ENDPOINT",
+      "value": "https://hf-mirror.com"
+    },
+    {
+      "name": "HF_HOME",
+      "value": "/home/studio_service/hf_cache"
+    },
+    {
+      "name": "TRANSFORMERS_CACHE",
+      "value": "/home/studio_service/hf_cache"
+    },
+    {
       "name": "GRADIO_SERVER_NAME",
       "value": "0.0.0.0"
     },
