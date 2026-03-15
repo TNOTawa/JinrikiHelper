@@ -45,6 +45,7 @@ def get_models_dir():
         return PERSISTENT_MODELS_DIR
     return LOCAL_MODELS_DIR
 
+
 MODELS_DIR = None  # 延迟初始化
 MFA_DIR = None
 
@@ -52,31 +53,23 @@ MFA_DIR = None
 def ensure_ffmpeg():
     """确保 ffmpeg 已安装（用于音频格式转换，支持 m4a 等格式）"""
     import shutil
-    
+
     if shutil.which("ffmpeg"):
         logger.info("ffmpeg 已安装")
         return True
-    
+
     logger.info("ffmpeg 未安装，尝试安装...")
-    
+
     try:
-        # 尝试使用 apt-get 安装（Debian/Ubuntu）
-        result = subprocess.run(
-            ["apt-get", "update"],
-            capture_output=True, text=True, timeout=60
-        )
-        result = subprocess.run(
-            ["apt-get", "install", "-y", "ffmpeg"],
-            capture_output=True, text=True, timeout=120
-        )
-        
+        subprocess.run(["apt-get", "update"], capture_output=True, text=True, timeout=60)
+        subprocess.run(["apt-get", "install", "-y", "ffmpeg"], capture_output=True, text=True, timeout=120)
+
         if shutil.which("ffmpeg"):
             logger.info("ffmpeg 安装成功")
             return True
-        else:
-            logger.warning("ffmpeg 安装后仍未找到")
-            return False
-            
+
+        logger.warning("ffmpeg 安装后仍未找到")
+        return False
     except subprocess.TimeoutExpired:
         logger.warning("ffmpeg 安装超时")
         return False
@@ -85,116 +78,52 @@ def ensure_ffmpeg():
         return False
 
 
-def setup_environment():
-    """初始化云端环境"""
-    global MODELS_DIR, MFA_DIR
-    
-    # 初始化模型目录（可能创建符号链接）
-    MODELS_DIR = get_models_dir()
-    MFA_DIR = MODELS_DIR / "mfa"
-    
-    # 检测运行环境
-    is_cloud = any([
-        os.environ.get("SPACE_ID"),           # Hugging Face Spaces
-        os.environ.get("MODELSCOPE_SPACE"),   # 魔塔社区
-        os.environ.get("GRADIO_SERVER_NAME"), # 通用 Gradio 云端
-        Path("/home/studio_service").exists(), # 魔搭创空间特征目录
-    ])
-    
-    # 确保 ffmpeg 已安装（支持 m4a 等音频格式）
-    if is_cloud or platform.system() != "Windows":
-        ensure_ffmpeg()
-    
-    # 魔搭创空间无法访问 HuggingFace，使用镜像
-    if is_cloud and Path("/home/studio_service").exists():
-        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        logger.info("已设置 HuggingFace 镜像: hf-mirror.com")
-    
-    # 设置 pkuseg 模型目录（中文分词依赖，必须在 MFA 运行前设置）
-    if platform.system() != "Windows":
-        pkuseg_home = PERSISTENT_MODELS_DIR / "pkuseg" if PERSISTENT_MODELS_DIR.parent.exists() else Path("/root/.pkuseg")
-        pkuseg_home.mkdir(parents=True, exist_ok=True)
-        os.environ["PKUSEG_HOME"] = str(pkuseg_home)
-        logger.info(f"设置 PKUSEG_HOME: {pkuseg_home}")
-    
-    # Linux 环境下始终尝试安装 MFA（无论是否云端）
-    if platform.system() != "Windows":
-        logger.info("Linux 环境，检查并安装 MFA...")
-        setup_mfa_linux()
-    
-    if is_cloud:
-        logger.info("检测到云端环境，正在初始化...")
-        
-        # 设置临时目录
-        os.environ.setdefault("TMPDIR", "/tmp")
-        
-        # 下载所有必需模型
-        download_all_models()
-    else:
-        logger.info("本地环境运行")
+def setup_mfa_linux() -> bool:
+    """Linux 环境下安装 MFA（优先使用 pip，避免外链超时）
 
-
-def setup_mfa_linux():
-    """Linux 环境下安装 MFA（优先使用 pip，避免外链超时）"""
+    返回:
+        bool: MFA 是否可用
+    """
     import shutil
     import importlib.util
 
     def _run_cmd_ok(cmd, timeout=30):
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            return result.returncode == 0, (result.stdout or result.stderr or "").strip()
-        except Exception as e:
-            return False, str(e)
-    
-    def verify_mfa_working():
-        """验证 MFA 是否能正常工作（包括 kalpy 依赖）"""
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def verify_mfa_working() -> bool:
         commands = [
-            [sys.executable, "-m", "montreal_forced_aligner.command_line.mfa", "version"],
             [sys.executable, "-m", "montreal_forced_aligner.command_line.mfa", "--help"],
-            ["mfa", "version"],
-            ["mfa", "--version"],
-            ["mfa", "--help"],
-            [sys.executable, "-m", "montreal_forced_aligner", "version"],
             [sys.executable, "-m", "montreal_forced_aligner", "--help"],
+            ["mfa", "--help"],
         ]
 
         py_bin_dir = Path(sys.executable).parent
         mfa_bin = py_bin_dir / "mfa"
         if mfa_bin.exists():
-            commands.insert(0, [str(mfa_bin), "version"])
-            commands.insert(1, [str(mfa_bin), "--version"])
-            commands.insert(2, [str(mfa_bin), "--help"])
+            commands.insert(0, [str(mfa_bin), "--help"])
 
         for cmd in commands:
-            ok, output = _run_cmd_ok(cmd)
-            if ok:
+            if _run_cmd_ok(cmd):
                 logger.info(f"MFA 验证命令通过: {' '.join(cmd)}")
                 return True
 
-        # 仅打印最后一次输出的片段，避免日志过长
-        logger.warning("MFA 验证命令均未通过，可能是入口脚本未加入 PATH 或包入口形式差异")
+        logger.warning("MFA 验证命令均未通过，可能缺少 kalpy/_kalpy 或入口脚本未加入 PATH")
         return False
-    
-    # 检查 mfa 是否已可用
+
+    # 检查是否已可用
     if shutil.which("mfa") and verify_mfa_working():
         logger.info("MFA 已安装且工作正常")
-        return
-    
+        return True
+
     logger.info("MFA 不可用，Linux 下使用 pip 直接安装（跳过 micromamba 外链）...")
-    
+
     try:
-        # 1. 使用当前 Python 环境直接安装 MFA，避免外链下载 micromamba
-        logger.info("使用 pip 安装 MFA...")
         pip_result = subprocess.run(
-            [
-                sys.executable, "-m", "pip", "install", "--no-cache-dir",
-                "montreal-forced-aligner", "kalpy"
-            ],
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "montreal-forced-aligner"],
             capture_output=True,
             text=True,
             timeout=1800,
@@ -203,35 +132,28 @@ def setup_mfa_linux():
         if pip_result.returncode != 0:
             stderr_tail = (pip_result.stderr or "")[-800:]
             logger.error(f"pip 安装 MFA 失败: {stderr_tail}")
-            sys.exit(1)
+            return False
 
         logger.info("pip 安装 MFA 完成")
 
-        # 某些环境下 console_scripts 目录未在 PATH，补一层兜底
-        mfa_path = shutil.which("mfa")
-        if not mfa_path:
+        # 尝试补 PATH
+        if not shutil.which("mfa"):
             candidate_dir = Path(sys.executable).parent
             candidate_mfa = candidate_dir / "mfa"
             if candidate_mfa.exists() and str(candidate_dir) not in os.environ.get("PATH", ""):
                 os.environ["PATH"] = f"{candidate_dir}:{os.environ.get('PATH', '')}"
                 logger.info(f"已将 {candidate_dir} 加入 PATH")
 
-        # 再次验证，允许 PATH 更新后生效
-        if not verify_mfa_working():
-            logger.error("MFA 安装后验证失败（命令入口不可用）")
-            sys.exit(1)
-        
-        # 2. 安装中文/日语分词依赖（无论新装还是已有环境都需要检查）
-        
-        # 设置 pkuseg 模型目录到持久化路径（避免每次重启重新下载）
+        # 安装中文/日语分词依赖
         pkuseg_home = PERSISTENT_MODELS_DIR / "pkuseg" if PERSISTENT_MODELS_DIR.parent.exists() else Path("/root/.pkuseg")
         pkuseg_home.mkdir(parents=True, exist_ok=True)
         os.environ["PKUSEG_HOME"] = str(pkuseg_home)
-        
+
         try:
             has_pkuseg = importlib.util.find_spec("spacy_pkuseg") is not None
         except Exception:
             has_pkuseg = False
+
         if not has_pkuseg:
             logger.info("安装中文/日语分词依赖...")
             dep_cmd = [
@@ -239,33 +161,69 @@ def setup_mfa_linux():
                 "spacy-pkuseg", "dragonmapper", "hanziconv",
                 "sudachipy", "sudachidict_core"
             ]
-
-            result = subprocess.run(dep_cmd, capture_output=True, text=True, timeout=600)
-            if result.returncode != 0:
-                logger.error(f"分词依赖安装失败: {result.stderr}")
-                sys.exit(1)
-            logger.info("分词依赖安装完成")
+            dep_result = subprocess.run(dep_cmd, capture_output=True, text=True, timeout=600)
+            if dep_result.returncode != 0:
+                logger.warning(f"分词依赖安装失败（继续运行）: {dep_result.stderr[-500:]}")
+            else:
+                logger.info("分词依赖安装完成")
         else:
             logger.info("分词依赖已存在")
-            
-            # pkuseg 模型下载移到 download_pkuseg_models() 独立函数中
-        
-        # 3. 验证安装
+
         if verify_mfa_working():
             logger.info("MFA 验证通过")
-        else:
-            logger.error("MFA 安装后验证失败")
-            sys.exit(1)
-        
+            return True
+
+        logger.warning("MFA 安装后仍不可用，将以无 MFA 模式继续")
+        return False
     except subprocess.TimeoutExpired as e:
         logger.error(f"MFA 安装超时: {e}")
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        logger.error(f"MFA 安装失败: {e.stderr[-500:] if e.stderr else e}")
-        sys.exit(1)
+        return False
     except Exception as e:
         logger.error(f"MFA 安装异常: {e}")
-        sys.exit(1)
+        return False
+
+
+def setup_environment():
+    """初始化云端环境"""
+    global MODELS_DIR, MFA_DIR
+
+    # 初始化模型目录（可能创建符号链接）
+    MODELS_DIR = get_models_dir()
+    MFA_DIR = MODELS_DIR / "mfa"
+
+    # 检测运行环境
+    is_cloud = any([
+        os.environ.get("SPACE_ID"),
+        os.environ.get("MODELSCOPE_SPACE"),
+        os.environ.get("GRADIO_SERVER_NAME"),
+        Path("/home/studio_service").exists(),
+    ])
+
+    if is_cloud or platform.system() != "Windows":
+        ensure_ffmpeg()
+
+    # 魔搭创空间无法访问 HuggingFace，使用镜像
+    if is_cloud and Path("/home/studio_service").exists():
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+        logger.info("已设置 HuggingFace 镜像: hf-mirror.com")
+
+    # 设置 pkuseg 模型目录（中文分词依赖，必须在 MFA 运行前设置）
+    if platform.system() != "Windows":
+        pkuseg_home = PERSISTENT_MODELS_DIR / "pkuseg" if PERSISTENT_MODELS_DIR.parent.exists() else Path("/root/.pkuseg")
+        pkuseg_home.mkdir(parents=True, exist_ok=True)
+        os.environ["PKUSEG_HOME"] = str(pkuseg_home)
+        logger.info(f"设置 PKUSEG_HOME: {pkuseg_home}")
+
+        logger.info("Linux 环境，检查并安装 MFA...")
+        mfa_ok = setup_mfa_linux()
+        if not mfa_ok:
+            logger.warning("MFA 当前不可用，将跳过对齐功能但继续启动服务")
+
+    if is_cloud:
+        os.environ.setdefault("TMPDIR", "/tmp")
+        download_all_models()
+    else:
+        logger.info("本地环境运行")
 
 
 def download_all_models():
