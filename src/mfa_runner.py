@@ -29,6 +29,48 @@ DEFAULT_TEMP_DIR = BASE_DIR / "mfa_temp"
 IS_WINDOWS = platform.system() == "Windows"
 
 
+def _resolve_linux_mfa_command() -> Optional[list]:
+    """解析 Linux/macOS 下可用的 MFA 命令入口，优先官方 conda/mamba 方案。"""
+    candidates = []
+
+    conda = shutil.which("conda")
+    if conda:
+        candidates.append([conda, "run", "-n", "base", "mfa"])
+
+    micromamba = shutil.which("micromamba")
+    if micromamba:
+        candidates.append([micromamba, "run", "-n", "base", "mfa"])
+
+    mamba = shutil.which("mamba")
+    if mamba:
+        candidates.append([mamba, "run", "-n", "base", "mfa"])
+
+    # 兜底：系统 PATH 里的 mfa（可能是 pip 版）
+    candidates.append(["mfa"])
+
+    for cmd in candidates:
+        try:
+            result = subprocess.run(
+                cmd + ["--help"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                logger.info(f"MFA 入口可用: {' '.join(cmd)}")
+                return cmd
+
+            output = f"{result.stdout}\n{result.stderr}"
+            if "No module named '_kalpy'" in output:
+                logger.warning(
+                    f"MFA 入口不可用（缺少 _kalpy）: {' '.join(cmd)}，请使用 conda-forge 方式安装"
+                )
+        except Exception as e:
+            logger.debug(f"探测 MFA 入口失败: {' '.join(cmd)} -> {e}")
+
+    return None
+
+
 def check_mfa_available() -> bool:
     """
     检查 MFA 是否可用
@@ -44,32 +86,37 @@ def check_mfa_available() -> bool:
             return False
         return True
     else:
-        # Linux/macOS: 检查 mfa 命令
-        mfa_path = shutil.which("mfa")
-        if mfa_path:
-            # 验证 mfa 能正常运行
-            # 云端首次运行可能需要较长时间初始化，设置 120 秒超时
-            try:
-                result = subprocess.run(
-                    ["mfa", "version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-                if result.returncode == 0:
-                    logger.info(f"MFA 可用: {result.stdout.strip()}")
-                    return True
-                else:
-                    logger.warning(f"MFA 命令执行失败: {result.stderr or result.stdout}")
-            except subprocess.TimeoutExpired:
-                logger.warning("MFA 验证超时（120秒），可能正在初始化，将尝试继续使用")
-                # 超时但命令存在，假设可用（实际对齐时会再次验证）
+        # Linux/macOS: 自动解析可用入口，优先 conda/mamba
+        cmd = _resolve_linux_mfa_command()
+        if not cmd:
+            logger.warning("未找到可用 MFA 入口，请按官方推荐使用 conda-forge 安装: conda install -c conda-forge montreal-forced-aligner")
+            return False
+
+        # 验证 mfa 能正常运行
+        # 云端首次运行可能需要较长时间初始化，设置 120 秒超时
+        try:
+            result = subprocess.run(
+                cmd + ["version"],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            if result.returncode == 0:
+                logger.info(f"MFA 可用: {result.stdout.strip()}")
                 return True
-            except Exception as e:
-                logger.warning(f"MFA 验证异常: {e}")
-        else:
-            logger.warning("未找到 mfa 命令，请按官方推荐使用 conda-forge 安装: conda install -c conda-forge montreal-forced-aligner")
-        
+
+            output = f"{result.stdout}\n{result.stderr}"
+            if "No module named '_kalpy'" in output:
+                logger.warning("MFA 运行失败：检测到 pip 版缺少 _kalpy，请改用 conda-forge 安装的 MFA")
+            else:
+                logger.warning(f"MFA 命令执行失败: {result.stderr or result.stdout}")
+        except subprocess.TimeoutExpired:
+            logger.warning("MFA 验证超时（120秒），可能正在初始化，将尝试继续使用")
+            # 超时但命令存在，假设可用（实际对齐时会再次验证）
+            return True
+        except Exception as e:
+            logger.warning(f"MFA 验证异常: {e}")
+
         return False
 
 
@@ -82,7 +129,7 @@ def _get_mfa_command() -> list:
     if IS_WINDOWS:
         return [str(MFA_PYTHON), "-m", "montreal_forced_aligner"]
     else:
-        return ["mfa"]
+        return _resolve_linux_mfa_command() or ["mfa"]
 
 
 def _build_mfa_env(mfa_root: Optional[Path] = None) -> dict:

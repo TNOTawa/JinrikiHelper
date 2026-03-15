@@ -90,16 +90,31 @@ def setup_mfa_linux() -> bool:
     def _run_cmd_ok(cmd, timeout=30):
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            return result.returncode == 0
+            return result.returncode == 0, (result.stdout or ""), (result.stderr or "")
         except Exception:
-            return False
+            return False, "", ""
 
     def verify_mfa_working() -> bool:
-        commands = [
+        commands = []
+
+        # 优先官方 conda/mamba 入口，避免 PATH 中残留的 pip 版 mfa（缺少 _kalpy）
+        conda = shutil.which("conda")
+        if conda:
+            commands.append([conda, "run", "-n", "base", "mfa", "--help"])
+
+        micromamba = shutil.which("micromamba")
+        if micromamba:
+            commands.append([micromamba, "run", "-n", "base", "mfa", "--help"])
+
+        mamba = shutil.which("mamba")
+        if mamba:
+            commands.append([mamba, "run", "-n", "base", "mfa", "--help"])
+
+        commands.extend([
             [sys.executable, "-m", "montreal_forced_aligner.command_line.mfa", "--help"],
             [sys.executable, "-m", "montreal_forced_aligner", "--help"],
             ["mfa", "--help"],
-        ]
+        ])
 
         py_bin_dir = Path(sys.executable).parent
         mfa_bin = py_bin_dir / "mfa"
@@ -107,9 +122,14 @@ def setup_mfa_linux() -> bool:
             commands.insert(0, [str(mfa_bin), "--help"])
 
         for cmd in commands:
-            if _run_cmd_ok(cmd):
+            ok, stdout, stderr = _run_cmd_ok(cmd, timeout=120)
+            if ok:
                 logger.info(f"MFA 验证命令通过: {' '.join(cmd)}")
                 return True
+
+            output = f"{stdout}\n{stderr}"
+            if "No module named '_kalpy'" in output:
+                logger.warning(f"命令 {' '.join(cmd)} 缺少 _kalpy，跳过该入口")
 
         logger.warning("MFA 验证命令均未通过，可能缺少 kalpy/_kalpy 或入口脚本未加入 PATH")
         return False
