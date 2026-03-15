@@ -5,7 +5,6 @@ MFA 调用模块
 """
 
 import os
-import sys
 import platform
 import shutil
 import subprocess
@@ -30,34 +29,6 @@ DEFAULT_TEMP_DIR = BASE_DIR / "mfa_temp"
 IS_WINDOWS = platform.system() == "Windows"
 
 
-def _probe_mfa_command(prefix: list) -> bool:
-    """探测给定命令前缀是否可用"""
-    try:
-        result = subprocess.run(
-            prefix + ["--help"],
-            capture_output=True,
-            text=True,
-            timeout=20
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def _resolve_linux_mfa_command() -> Optional[list]:
-    """解析 Linux 下可用的 MFA 命令入口"""
-    candidates = [
-        [sys.executable, "-m", "montreal_forced_aligner.command_line.mfa"],
-        ["mfa"],
-        [sys.executable, "-m", "montreal_forced_aligner"],
-    ]
-
-    for cmd in candidates:
-        if _probe_mfa_command(cmd):
-            return cmd
-    return None
-
-
 def check_mfa_available() -> bool:
     """
     检查 MFA 是否可用
@@ -73,13 +44,32 @@ def check_mfa_available() -> bool:
             return False
         return True
     else:
-        # Linux/macOS: 自动解析可用入口（mfa 或 python -m ...）
-        cmd = _resolve_linux_mfa_command()
-        if cmd:
-            logger.info(f"MFA 可用，入口: {' '.join(cmd)}")
-            return True
-
-        logger.warning("未找到可用的 MFA 入口（mfa 或 python -m montreal_forced_aligner）")
+        # Linux/macOS: 检查 mfa 命令
+        mfa_path = shutil.which("mfa")
+        if mfa_path:
+            # 验证 mfa 能正常运行
+            # 云端首次运行可能需要较长时间初始化，设置 120 秒超时
+            try:
+                result = subprocess.run(
+                    ["mfa", "version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if result.returncode == 0:
+                    logger.info(f"MFA 可用: {result.stdout.strip()}")
+                    return True
+                else:
+                    logger.warning(f"MFA 命令执行失败: {result.stderr or result.stdout}")
+            except subprocess.TimeoutExpired:
+                logger.warning("MFA 验证超时（120秒），可能正在初始化，将尝试继续使用")
+                # 超时但命令存在，假设可用（实际对齐时会再次验证）
+                return True
+            except Exception as e:
+                logger.warning(f"MFA 验证异常: {e}")
+        else:
+            logger.warning("未找到 mfa 命令，请按官方推荐使用 conda-forge 安装: conda install -c conda-forge montreal-forced-aligner")
+        
         return False
 
 
@@ -92,8 +82,7 @@ def _get_mfa_command() -> list:
     if IS_WINDOWS:
         return [str(MFA_PYTHON), "-m", "montreal_forced_aligner"]
     else:
-        cmd = _resolve_linux_mfa_command()
-        return cmd or ["mfa"]
+        return ["mfa"]
 
 
 def _build_mfa_env(mfa_root: Optional[Path] = None) -> dict:
@@ -264,7 +253,7 @@ def run_mfa_alignment(
     
     # 检查环境
     if not check_mfa_available():
-        platform_hint = "tools/mfa_engine 目录" if IS_WINDOWS else "pip install montreal-forced-aligner"
+        platform_hint = "tools/mfa_engine 目录" if IS_WINDOWS else "conda install -c conda-forge montreal-forced-aligner"
         return False, f"MFA 环境不可用，请检查 {platform_hint}"
     
     # 设置默认路径

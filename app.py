@@ -79,7 +79,7 @@ def ensure_ffmpeg():
 
 
 def setup_mfa_linux() -> bool:
-    """Linux 环境下安装 MFA（优先使用 pip，避免外链超时）
+    """Linux 环境下安装 MFA（使用 MFA 官方推荐的 conda-forge 方案）
 
     返回:
         bool: MFA 是否可用
@@ -119,30 +119,71 @@ def setup_mfa_linux() -> bool:
         logger.info("MFA 已安装且工作正常")
         return True
 
-    logger.info("MFA 不可用，Linux 下使用 pip 直接安装（跳过 micromamba 外链）...")
+    logger.info("MFA 不可用，Linux 下将使用 conda/mamba 从 conda-forge 安装（官方推荐）...")
 
     try:
-        pip_result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "montreal-forced-aligner"],
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            check=False,
-        )
-        if pip_result.returncode != 0:
-            stderr_tail = (pip_result.stderr or "")[-800:]
-            logger.error(f"pip 安装 MFA 失败: {stderr_tail}")
+        install_attempts = []
+
+        mamba = shutil.which("mamba")
+        if mamba:
+            install_attempts.append((
+                "mamba",
+                [mamba, "install", "-y", "-c", "conda-forge", "montreal-forced-aligner"],
+            ))
+
+        micromamba = shutil.which("micromamba")
+        if micromamba:
+            install_attempts.append((
+                "micromamba(base)",
+                [micromamba, "install", "-y", "-n", "base", "-c", "conda-forge", "montreal-forced-aligner"],
+            ))
+
+        conda = shutil.which("conda")
+        if conda:
+            install_attempts.append((
+                "conda",
+                [conda, "install", "-y", "-c", "conda-forge", "montreal-forced-aligner"],
+            ))
+
+        if not install_attempts:
+            logger.error("未找到 conda/mamba/micromamba，无法按官方推荐方法安装 MFA")
             return False
 
-        logger.info("pip 安装 MFA 完成")
+        installed = False
+        for installer_name, install_cmd in install_attempts:
+            logger.info(f"尝试使用 {installer_name} 安装 MFA...")
+            result = subprocess.run(
+                install_cmd,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+                check=False,
+            )
+            if result.returncode == 0:
+                logger.info(f"{installer_name} 安装 MFA 完成")
+                installed = True
+                break
 
-        # 尝试补 PATH
+            stderr_tail = (result.stderr or result.stdout or "")[-800:]
+            logger.warning(f"{installer_name} 安装 MFA 失败: {stderr_tail}")
+
+        if not installed:
+            logger.error("所有 conda/mamba 安装尝试均失败")
+            return False
+
+        # 某些云端环境不会自动刷新 PATH，补充常见 conda bin 目录
         if not shutil.which("mfa"):
-            candidate_dir = Path(sys.executable).parent
-            candidate_mfa = candidate_dir / "mfa"
-            if candidate_mfa.exists() and str(candidate_dir) not in os.environ.get("PATH", ""):
-                os.environ["PATH"] = f"{candidate_dir}:{os.environ.get('PATH', '')}"
-                logger.info(f"已将 {candidate_dir} 加入 PATH")
+            candidate_dirs = [Path("/opt/conda/bin"), Path.home() / "micromamba" / "bin"]
+            conda_prefix = os.environ.get("CONDA_PREFIX")
+            if conda_prefix:
+                candidate_dirs.insert(0, Path(conda_prefix) / "bin")
+
+            for candidate_dir in candidate_dirs:
+                candidate_mfa = candidate_dir / "mfa"
+                if candidate_mfa.exists() and str(candidate_dir) not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = f"{candidate_dir}:{os.environ.get('PATH', '')}"
+                    logger.info(f"已将 {candidate_dir} 加入 PATH")
+                    break
 
         # 安装中文/日语分词依赖
         pkuseg_home = PERSISTENT_MODELS_DIR / "pkuseg" if PERSISTENT_MODELS_DIR.parent.exists() else Path("/root/.pkuseg")
