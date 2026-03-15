@@ -138,6 +138,7 @@ def setup_environment():
 def setup_mfa_linux():
     """Linux 环境下安装 MFA（使用 micromamba），失败则退出程序"""
     import shutil
+    import importlib.util
     
     def verify_mfa_working():
         """验证 MFA 是否能正常工作（包括 kalpy 依赖）"""
@@ -157,12 +158,14 @@ def setup_mfa_linux():
         logger.info("MFA 已安装且工作正常")
         return
     
-    logger.info("MFA 不可用，尝试使用 micromamba 安装...")
+    logger.info("MFA 不可用，优先尝试 pip 安装，再回退 micromamba...")
     
     # micromamba 安装路径（按进程隔离，避免并发启动导致 Text file busy）
     mamba_root = Path(f"/tmp/micromamba-{os.getpid()}")
     mamba_bin = mamba_root / "bin" / "micromamba"
     mfa_env = mamba_root / "envs" / "mfa"
+    mfa_bin_dir = None
+    using_mamba_env = False
 
     def run_mamba(args, env, timeout, check=True):
         """执行 micromamba，遇到 ETXTBSY 时重试"""
@@ -251,94 +254,121 @@ def setup_mfa_linux():
         raise RuntimeError(f"micromamba 下载失败: {last_error}")
     
     try:
-        # 1. 安装 micromamba（如果不存在）
-        if not mamba_bin.exists():
-            logger.info("下载 micromamba...")
-            ensure_micromamba_downloaded()
-        
-        # 2. 使用 micromamba 创建环境并安装 MFA
-        mfa_bin_path = mfa_env / "bin" / "mfa"
-        mfa_bin_dir = mfa_env / "bin"
-        need_install = not mfa_bin_path.exists()
-        
-        # 如果 mfa 存在，先将其加入 PATH 再验证
-        if mfa_bin_path.exists():
-            # 临时加入 PATH 以便验证
-            old_path = os.environ.get("PATH", "")
-            os.environ["PATH"] = f"{mfa_bin_dir}:{old_path}"
-            
-            if not verify_mfa_working():
-                logger.info("检测到损坏的 MFA 环境，删除重建...")
-                os.environ["PATH"] = old_path  # 恢复 PATH
-                import shutil as sh
-                sh.rmtree(mfa_env, ignore_errors=True)
-                need_install = True
-            else:
-                logger.info("MFA 环境验证通过，无需重新安装")
-        
-        if need_install:
-            logger.info("使用 micromamba 安装 MFA...")
-            env = os.environ.copy()
-            env["MAMBA_ROOT_PREFIX"] = str(mamba_root)
-            
-            # 创建环境并安装 MFA（指定 Python 3.11）
-            run_mamba([
-                "create", "-n", "mfa",
-                "-c", "conda-forge",
-                "python=3.11",
-                "montreal-forced-aligner",
-                "-y"
-            ], env=env, check=True, timeout=1800)
-            
-            # 更新确保使用 CPU 版本的 kaldi
-            run_mamba([
-                "install", "-n", "mfa",
-                "-c", "conda-forge",
-                "kalpy", "kaldi=*=cpu*",
-                "-y"
-            ], env=env, timeout=900)
-            
-            logger.info("MFA 安装完成")
+        # 1. 先尝试 pip 直接安装（创空间通常已配置可用 pip 源）
+        logger.info("优先尝试 pip 安装 MFA...")
+        pip_result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "montreal-forced-aligner"],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        if pip_result.returncode == 0 and verify_mfa_working():
+            logger.info("pip 安装 MFA 成功")
+            mfa_path = shutil.which("mfa")
+            if mfa_path:
+                mfa_bin_dir = Path(mfa_path).parent
+        else:
+            stderr_tail = (pip_result.stderr or "")[-500:]
+            logger.warning(f"pip 安装 MFA 失败或验证未通过，回退 micromamba。错误: {stderr_tail}")
+
+        # 2. pip 不可用时，回退到 micromamba
+        if not verify_mfa_working():
+            # 安装 micromamba（如果不存在）
+            if not mamba_bin.exists():
+                logger.info("下载 micromamba...")
+                ensure_micromamba_downloaded()
+
+            # 使用 micromamba 创建环境并安装 MFA
+            mfa_bin_path = mfa_env / "bin" / "mfa"
+            mfa_bin_dir = mfa_env / "bin"
+            need_install = not mfa_bin_path.exists()
+
+            # 如果 mfa 存在，先将其加入 PATH 再验证
+            if mfa_bin_path.exists():
+                # 临时加入 PATH 以便验证
+                old_path = os.environ.get("PATH", "")
+                os.environ["PATH"] = f"{mfa_bin_dir}:{old_path}"
+
+                if not verify_mfa_working():
+                    logger.info("检测到损坏的 MFA 环境，删除重建...")
+                    os.environ["PATH"] = old_path  # 恢复 PATH
+                    import shutil as sh
+                    sh.rmtree(mfa_env, ignore_errors=True)
+                    need_install = True
+                else:
+                    logger.info("MFA 环境验证通过，无需重新安装")
+
+            if need_install:
+                logger.info("使用 micromamba 安装 MFA...")
+                env = os.environ.copy()
+                env["MAMBA_ROOT_PREFIX"] = str(mamba_root)
+
+                # 创建环境并安装 MFA（指定 Python 3.11）
+                run_mamba([
+                    "create", "-n", "mfa",
+                    "-c", "conda-forge",
+                    "python=3.11",
+                    "montreal-forced-aligner",
+                    "-y"
+                ], env=env, check=True, timeout=1800)
+
+                # 更新确保使用 CPU 版本的 kaldi
+                run_mamba([
+                    "install", "-n", "mfa",
+                    "-c", "conda-forge",
+                    "kalpy", "kaldi=*=cpu*",
+                    "-y"
+                ], env=env, timeout=900)
+
+                logger.info("MFA 安装完成")
+
+            using_mamba_env = True
         
         # 3. 安装中文/日语分词依赖（无论新装还是已有环境都需要检查）
         pip_path = mfa_env / "bin" / "pip"
-        python_path = mfa_env / "bin" / "python"
         
         # 设置 pkuseg 模型目录到持久化路径（避免每次重启重新下载）
         pkuseg_home = PERSISTENT_MODELS_DIR / "pkuseg" if PERSISTENT_MODELS_DIR.parent.exists() else Path("/root/.pkuseg")
         pkuseg_home.mkdir(parents=True, exist_ok=True)
         os.environ["PKUSEG_HOME"] = str(pkuseg_home)
         
-        if pip_path.exists():
-            # 检查是否已安装分词依赖
-            pkuseg_path = mfa_env / "lib" / "python3.11" / "site-packages" / "spacy_pkuseg"
-            if not pkuseg_path.exists():
-                logger.info("安装中文/日语分词依赖...")
-                result = subprocess.run([
+        has_pkuseg = importlib.util.find_spec("spacy_pkuseg") is not None
+        if not has_pkuseg:
+            logger.info("安装中文/日语分词依赖...")
+            if using_mamba_env and pip_path.exists():
+                dep_cmd = [
                     str(pip_path), "install",
-                    "spacy-pkuseg", "dragonmapper", "hanziconv",  # 中文
-                    "sudachipy", "sudachidict_core"  # 日语
-                ], capture_output=True, text=True, timeout=300)
-                if result.returncode != 0:
-                    logger.error(f"分词依赖安装失败: {result.stderr}")
-                    sys.exit(1)
-                logger.info("分词依赖安装完成")
+                    "spacy-pkuseg", "dragonmapper", "hanziconv",
+                    "sudachipy", "sudachidict_core"
+                ]
             else:
-                logger.info("分词依赖已存在")
+                dep_cmd = [
+                    sys.executable, "-m", "pip", "install", "--no-cache-dir",
+                    "spacy-pkuseg", "dragonmapper", "hanziconv",
+                    "sudachipy", "sudachidict_core"
+                ]
+
+            result = subprocess.run(dep_cmd, capture_output=True, text=True, timeout=600)
+            if result.returncode != 0:
+                logger.error(f"分词依赖安装失败: {result.stderr}")
+                sys.exit(1)
+            logger.info("分词依赖安装完成")
+        else:
+            logger.info("分词依赖已存在")
             
             # pkuseg 模型下载移到 download_pkuseg_models() 独立函数中
         
         # 4. 确保 MFA 环境的 bin 目录在 PATH 中
-        if mfa_bin_dir.exists() and str(mfa_bin_dir) not in os.environ.get("PATH", ""):
+        if mfa_bin_dir and mfa_bin_dir.exists() and str(mfa_bin_dir) not in os.environ.get("PATH", ""):
             os.environ["PATH"] = f"{mfa_bin_dir}:{os.environ.get('PATH', '')}"
             logger.info(f"已将 {mfa_bin_dir} 加入 PATH")
-            
-            # 验证安装
-            if verify_mfa_working():
-                logger.info("MFA 验证通过")
-            else:
-                logger.error("MFA 安装后验证失败")
-                sys.exit(1)
+
+        # 验证安装
+        if verify_mfa_working():
+            logger.info("MFA 验证通过")
+        else:
+            logger.error("MFA 安装后验证失败")
+            sys.exit(1)
         
     except subprocess.TimeoutExpired as e:
         logger.error(f"MFA 安装超时: {e}")
