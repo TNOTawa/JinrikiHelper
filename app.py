@@ -153,11 +153,9 @@ def setup_mfa_linux():
     
     def verify_mfa_working():
         """验证 MFA 是否能正常工作（包括 kalpy 依赖）"""
-        if importlib.util.find_spec("montreal_forced_aligner") is not None:
-            logger.info("检测到 montreal_forced_aligner Python 包")
-            return True
-
         commands = [
+            [sys.executable, "-m", "montreal_forced_aligner.command_line.mfa", "version"],
+            [sys.executable, "-m", "montreal_forced_aligner.command_line.mfa", "--help"],
             ["mfa", "version"],
             ["mfa", "--version"],
             ["mfa", "--help"],
@@ -193,7 +191,10 @@ def setup_mfa_linux():
         # 1. 使用当前 Python 环境直接安装 MFA，避免外链下载 micromamba
         logger.info("使用 pip 安装 MFA...")
         pip_result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "montreal-forced-aligner"],
+            [
+                sys.executable, "-m", "pip", "install", "--no-cache-dir",
+                "montreal-forced-aligner", "kalpy"
+            ],
             capture_output=True,
             text=True,
             timeout=1800,
@@ -227,7 +228,10 @@ def setup_mfa_linux():
         pkuseg_home.mkdir(parents=True, exist_ok=True)
         os.environ["PKUSEG_HOME"] = str(pkuseg_home)
         
-        has_pkuseg = importlib.util.find_spec("spacy_pkuseg") is not None
+        try:
+            has_pkuseg = importlib.util.find_spec("spacy_pkuseg") is not None
+        except Exception:
+            has_pkuseg = False
         if not has_pkuseg:
             logger.info("安装中文/日语分词依赖...")
             dep_cmd = [
