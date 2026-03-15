@@ -86,6 +86,10 @@ def setup_mfa_linux() -> bool:
     """
     import shutil
     import importlib.util
+    import tarfile
+    import tempfile
+    import urllib.request
+    import stat
 
     def _run_cmd_ok(cmd, timeout=30):
         try:
@@ -94,20 +98,100 @@ def setup_mfa_linux() -> bool:
         except Exception:
             return False, "", ""
 
+    def _ensure_micromamba_available() -> str | None:
+        """自动下载并配置 micromamba（无控制台场景）。"""
+        mm_path = shutil.which("micromamba")
+        if mm_path:
+            return mm_path
+
+        if PERSISTENT_MODELS_DIR.parent.exists():
+            mamba_root = PERSISTENT_MODELS_DIR.parent / "micromamba"
+        else:
+            mamba_root = BASE_DIR / ".micromamba"
+
+        mamba_bin_dir = mamba_root / "bin"
+        mamba_bin_dir.mkdir(parents=True, exist_ok=True)
+        target_bin = mamba_bin_dir / "micromamba"
+
+        os.environ["MAMBA_ROOT_PREFIX"] = str(mamba_root)
+        if str(mamba_bin_dir) not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{mamba_bin_dir}:{os.environ.get('PATH', '')}"
+
+        if target_bin.exists():
+            target_bin.chmod(target_bin.stat().st_mode | stat.S_IEXEC)
+            logger.info(f"检测到已存在 micromamba: {target_bin}")
+            return str(target_bin)
+
+        urls = [
+            "https://micro.mamba.pm/api/micromamba/linux-64/latest",
+            "https://gh-proxy.com/https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-linux-64",
+            "https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-linux-64",
+        ]
+
+        for url in urls:
+            for attempt in range(1, 3):
+                try:
+                    logger.info(f"下载 micromamba: {url} (第{attempt}次)")
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp:
+                        tmp_path = Path(tmp.name)
+
+                    try:
+                        with urllib.request.urlopen(url, timeout=180) as resp:
+                            data = resp.read()
+                        tmp_path.write_bytes(data)
+
+                        # 处理 tar.bz2 包格式
+                        extracted = False
+                        try:
+                            with tarfile.open(tmp_path, mode="r:*") as tar:
+                                member = None
+                                for m in tar.getmembers():
+                                    if m.name.endswith("/bin/micromamba") or m.name == "bin/micromamba":
+                                        member = m
+                                        break
+                                if member is not None:
+                                    src = tar.extractfile(member)
+                                    if src is None:
+                                        raise RuntimeError("无法从压缩包读取 micromamba")
+                                    target_bin.write_bytes(src.read())
+                                    extracted = True
+                        except tarfile.TarError:
+                            extracted = False
+
+                        # 处理单文件二进制格式
+                        if not extracted:
+                            target_bin.write_bytes(tmp_path.read_bytes())
+
+                        target_bin.chmod(target_bin.stat().st_mode | stat.S_IEXEC)
+                        logger.info(f"micromamba 就绪: {target_bin}")
+                        return str(target_bin)
+                    finally:
+                        if tmp_path.exists():
+                            tmp_path.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.warning(f"下载/安装 micromamba 失败: {e}")
+
+        logger.error("自动配置 micromamba 失败")
+        return None
+
     def verify_mfa_working() -> bool:
+        mfa_env_name = os.environ.get("JINRIKI_MFA_ENV_NAME", "mfa")
         commands = []
 
         # 优先官方 conda/mamba 入口，避免 PATH 中残留的 pip 版 mfa（缺少 _kalpy）
         conda = shutil.which("conda")
         if conda:
+            commands.append([conda, "run", "-n", mfa_env_name, "mfa", "--help"])
             commands.append([conda, "run", "-n", "base", "mfa", "--help"])
 
         micromamba = shutil.which("micromamba")
         if micromamba:
+            commands.append([micromamba, "run", "-n", mfa_env_name, "mfa", "--help"])
             commands.append([micromamba, "run", "-n", "base", "mfa", "--help"])
 
         mamba = shutil.which("mamba")
         if mamba:
+            commands.append([mamba, "run", "-n", mfa_env_name, "mfa", "--help"])
             commands.append([mamba, "run", "-n", "base", "mfa", "--help"])
 
         commands.extend([
@@ -135,24 +219,39 @@ def setup_mfa_linux() -> bool:
         return False
 
     # 检查是否已可用
-    if shutil.which("mfa") and verify_mfa_working():
+    if verify_mfa_working():
         logger.info("MFA 已安装且工作正常")
         return True
 
     logger.info("MFA 不可用，Linux 下将使用 conda/mamba 从 conda-forge 安装（官方推荐）...")
 
     try:
+        mfa_env_name = os.environ.get("JINRIKI_MFA_ENV_NAME", "mfa")
+
+        # 无控制台场景：自动补齐 micromamba
+        if not any([shutil.which("conda"), shutil.which("mamba"), shutil.which("micromamba")]):
+            logger.info("未检测到 conda/mamba/micromamba，开始自动配置 micromamba...")
+            _ensure_micromamba_available()
+
         install_attempts = []
 
         mamba = shutil.which("mamba")
         if mamba:
             install_attempts.append((
                 "mamba",
-                [mamba, "install", "-y", "-c", "conda-forge", "montreal-forced-aligner"],
+                [mamba, "install", "-y", "-n", "base", "-c", "conda-forge", "montreal-forced-aligner"],
             ))
 
         micromamba = shutil.which("micromamba")
         if micromamba:
+            install_attempts.append((
+                f"micromamba(create:{mfa_env_name})",
+                [micromamba, "create", "-y", "-n", mfa_env_name, "-c", "conda-forge", "montreal-forced-aligner"],
+            ))
+            install_attempts.append((
+                f"micromamba(install:{mfa_env_name})",
+                [micromamba, "install", "-y", "-n", mfa_env_name, "-c", "conda-forge", "montreal-forced-aligner"],
+            ))
             install_attempts.append((
                 "micromamba(base)",
                 [micromamba, "install", "-y", "-n", "base", "-c", "conda-forge", "montreal-forced-aligner"],
@@ -162,7 +261,7 @@ def setup_mfa_linux() -> bool:
         if conda:
             install_attempts.append((
                 "conda",
-                [conda, "install", "-y", "-c", "conda-forge", "montreal-forced-aligner"],
+                [conda, "install", "-y", "-n", "base", "-c", "conda-forge", "montreal-forced-aligner"],
             ))
 
         if not install_attempts:

@@ -32,18 +32,26 @@ IS_WINDOWS = platform.system() == "Windows"
 def _resolve_linux_mfa_command() -> Optional[list]:
     """解析 Linux/macOS 下可用的 MFA 命令入口，优先官方 conda/mamba 方案。"""
     candidates = []
+    mfa_env_name = os.environ.get("JINRIKI_MFA_ENV_NAME", "mfa")
+    env_names = []
+    for env_name in [mfa_env_name, "base"]:
+        if env_name and env_name not in env_names:
+            env_names.append(env_name)
 
     conda = shutil.which("conda")
     if conda:
-        candidates.append([conda, "run", "-n", "base", "mfa"])
+        for env_name in env_names:
+            candidates.append([conda, "run", "-n", env_name, "mfa"])
 
     micromamba = shutil.which("micromamba")
     if micromamba:
-        candidates.append([micromamba, "run", "-n", "base", "mfa"])
+        for env_name in env_names:
+            candidates.append([micromamba, "run", "-n", env_name, "mfa"])
 
     mamba = shutil.which("mamba")
     if mamba:
-        candidates.append([mamba, "run", "-n", "base", "mfa"])
+        for env_name in env_names:
+            candidates.append([mamba, "run", "-n", env_name, "mfa"])
 
     # 兜底：系统 PATH 里的 mfa（可能是 pip 版）
     candidates.append(["mfa"])
