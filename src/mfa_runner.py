@@ -29,6 +29,31 @@ DEFAULT_TEMP_DIR = BASE_DIR / "mfa_temp"
 IS_WINDOWS = platform.system() == "Windows"
 
 
+def _get_callable_conda_tools() -> dict[str, str]:
+    """查找可调用的 conda 类工具（conda/mamba/micromamba）。"""
+    tools = {}
+    for tool_name in ["conda", "mamba", "micromamba"]:
+        tool_path = shutil.which(tool_name)
+        if not tool_path:
+            continue
+
+        try:
+            result = subprocess.run(
+                [tool_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if result.returncode == 0:
+                tools[tool_name] = tool_path
+            else:
+                logger.warning(f"检测到 {tool_name} 但不可调用，已跳过: {tool_path}")
+        except Exception as e:
+            logger.warning(f"探测 {tool_name} 失败，已跳过: {e}")
+
+    return tools
+
+
 def _resolve_linux_mfa_command() -> Optional[list]:
     """解析 Linux/macOS 下可用的 MFA 命令入口，优先官方 conda/mamba 方案。"""
     candidates = []
@@ -38,17 +63,19 @@ def _resolve_linux_mfa_command() -> Optional[list]:
         if env_name and env_name not in env_names:
             env_names.append(env_name)
 
-    conda = shutil.which("conda")
+    conda_tools = _get_callable_conda_tools()
+
+    conda = conda_tools.get("conda")
     if conda:
         for env_name in env_names:
             candidates.append([conda, "run", "-n", env_name, "mfa"])
 
-    micromamba = shutil.which("micromamba")
+    micromamba = conda_tools.get("micromamba")
     if micromamba:
         for env_name in env_names:
             candidates.append([micromamba, "run", "-n", env_name, "mfa"])
 
-    mamba = shutil.which("mamba")
+    mamba = conda_tools.get("mamba")
     if mamba:
         for env_name in env_names:
             candidates.append([mamba, "run", "-n", env_name, "mfa"])

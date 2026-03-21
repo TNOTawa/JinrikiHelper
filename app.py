@@ -98,6 +98,21 @@ def setup_mfa_linux() -> bool:
         except Exception:
             return False, "", ""
 
+    def _get_callable_conda_tools() -> dict[str, str]:
+        """查找可调用的 conda 类工具（conda/mamba/micromamba）。"""
+        tools = {}
+        for tool_name in ["conda", "mamba", "micromamba"]:
+            tool_path = shutil.which(tool_name)
+            if not tool_path:
+                continue
+
+            ok, _, _ = _run_cmd_ok([tool_path, "--version"], timeout=20)
+            if ok:
+                tools[tool_name] = tool_path
+            else:
+                logger.warning(f"检测到 {tool_name} 但不可调用，已跳过: {tool_path}")
+        return tools
+
     def _ensure_micromamba_available() -> str | None:
         """自动下载并配置 micromamba（无控制台场景）。"""
         mm_path = shutil.which("micromamba")
@@ -177,19 +192,20 @@ def setup_mfa_linux() -> bool:
     def verify_mfa_working() -> bool:
         mfa_env_name = os.environ.get("JINRIKI_MFA_ENV_NAME", "mfa")
         commands = []
+        conda_tools = _get_callable_conda_tools()
 
         # 优先官方 conda/mamba 入口，避免 PATH 中残留的 pip 版 mfa（缺少 _kalpy）
-        conda = shutil.which("conda")
+        conda = conda_tools.get("conda")
         if conda:
             commands.append([conda, "run", "-n", mfa_env_name, "mfa", "--help"])
             commands.append([conda, "run", "-n", "base", "mfa", "--help"])
 
-        micromamba = shutil.which("micromamba")
+        micromamba = conda_tools.get("micromamba")
         if micromamba:
             commands.append([micromamba, "run", "-n", mfa_env_name, "mfa", "--help"])
             commands.append([micromamba, "run", "-n", "base", "mfa", "--help"])
 
-        mamba = shutil.which("mamba")
+        mamba = conda_tools.get("mamba")
         if mamba:
             commands.append([mamba, "run", "-n", mfa_env_name, "mfa", "--help"])
             commands.append([mamba, "run", "-n", "base", "mfa", "--help"])
@@ -227,22 +243,24 @@ def setup_mfa_linux() -> bool:
 
     try:
         mfa_env_name = os.environ.get("JINRIKI_MFA_ENV_NAME", "mfa")
+        conda_tools = _get_callable_conda_tools()
 
         # 无控制台场景：自动补齐 micromamba
-        if not any([shutil.which("conda"), shutil.which("mamba"), shutil.which("micromamba")]):
+        if not conda_tools:
             logger.info("未检测到 conda/mamba/micromamba，开始自动配置 micromamba...")
             _ensure_micromamba_available()
+            conda_tools = _get_callable_conda_tools()
 
         install_attempts = []
 
-        mamba = shutil.which("mamba")
+        mamba = conda_tools.get("mamba")
         if mamba:
             install_attempts.append((
                 "mamba",
                 [mamba, "install", "-y", "-n", "base", "-c", "conda-forge", "montreal-forced-aligner"],
             ))
 
-        micromamba = shutil.which("micromamba")
+        micromamba = conda_tools.get("micromamba")
         if micromamba:
             install_attempts.append((
                 f"micromamba(create:{mfa_env_name})",
@@ -257,7 +275,7 @@ def setup_mfa_linux() -> bool:
                 [micromamba, "install", "-y", "-n", "base", "-c", "conda-forge", "montreal-forced-aligner"],
             ))
 
-        conda = shutil.which("conda")
+        conda = conda_tools.get("conda")
         if conda:
             install_attempts.append((
                 "conda",
