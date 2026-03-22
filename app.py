@@ -10,6 +10,7 @@ import subprocess
 import platform
 import logging
 import time
+import zipfile
 from pathlib import Path
 
 logging.basicConfig(
@@ -499,20 +500,66 @@ def download_pkuseg_models() -> bool:
     
     pkuseg_home = Path(os.environ.get("PKUSEG_HOME", "/root/.pkuseg"))
     pkuseg_home.mkdir(parents=True, exist_ok=True)
-    
+
     pkuseg_model_dir = pkuseg_home / "spacy_ontonotes"
     postag_model_dir = pkuseg_home / "postag"
-    
+
     # 关键：检查 spacy_ontonotes.zip 是否存在（spacy_pkuseg 的检查逻辑）
     # postag.zip 在 GitHub releases 中不存在，不需要检查
     spacy_ontonotes_zip = pkuseg_home / "spacy_ontonotes.zip"
-    
-    if spacy_ontonotes_zip.exists():
-        logger.info(f"pkuseg 模型 zip 文件已存在: {pkuseg_home}")
-        # 列出目录内容供调试
-        files = [f.name for f in pkuseg_home.iterdir()]
-        logger.info(f"pkuseg 目录内容: {files}")
+
+    def _pkuseg_model_ready() -> bool:
+        feature_candidates = [
+            pkuseg_model_dir / "features.msgpack",
+            pkuseg_model_dir / "features.pkl",
+            pkuseg_model_dir / "features.json",
+        ]
+        has_feature = any(p.exists() for p in feature_candidates)
+        has_unigram = (pkuseg_model_dir / "unigram_word.txt").exists()
+        return spacy_ontonotes_zip.exists() and has_feature and has_unigram
+
+    def _repair_extract_from_zip() -> bool:
+        if not spacy_ontonotes_zip.exists():
+            return False
+        try:
+            pkuseg_model_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(spacy_ontonotes_zip, "r") as zf:
+                zf.extractall(pkuseg_model_dir)
+
+            # 兼容 zip 内部带一层 spacy_ontonotes/ 目录的情况
+            nested_dir = pkuseg_model_dir / "spacy_ontonotes"
+            if nested_dir.is_dir():
+                import shutil
+                for item in nested_dir.iterdir():
+                    dst = pkuseg_model_dir / item.name
+                    if dst.exists():
+                        if dst.is_dir():
+                            shutil.rmtree(dst, ignore_errors=True)
+                        else:
+                            dst.unlink(missing_ok=True)
+                    shutil.move(str(item), str(dst))
+                shutil.rmtree(nested_dir, ignore_errors=True)
+
+            return _pkuseg_model_ready()
+        except Exception as e:
+            logger.warning(f"修复 pkuseg 解压失败: {e}")
+            return False
+
+    if _pkuseg_model_ready():
+        logger.info(f"pkuseg 模型已就绪: {pkuseg_home}")
         return True
+
+    # zip 已存在但模型不完整：优先尝试重新解压修复
+    if spacy_ontonotes_zip.exists():
+        logger.warning("检测到 spacy_ontonotes.zip 已存在，但模型目录不完整，尝试修复解压...")
+        if _repair_extract_from_zip():
+            logger.info("pkuseg 模型修复成功")
+            return True
+        logger.warning("pkuseg 模型修复失败，准备重新下载")
+        try:
+            spacy_ontonotes_zip.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"删除损坏 zip 失败: {e}")
     
     # 检查是否有文件被错误解压到根目录（旧版本遗留问题）
     root_msgpack = pkuseg_home / "features.msgpack"
@@ -539,7 +586,7 @@ def download_pkuseg_models() -> bool:
     
     # 只检查 spacy_ontonotes.zip（这是 spacy_pkuseg 必需的）
     # postag 模型在 GitHub releases 中不存在，spacy_pkuseg 会使用内置的词性标注
-    if spacy_ontonotes_zip.exists():
+    if _pkuseg_model_ready():
         logger.info(f"pkuseg 模型已就绪: {pkuseg_home}")
         return True
     
@@ -594,30 +641,48 @@ def download_pkuseg_models() -> bool:
 
                     logger.info(f"下载完成，文件大小: {zip_path.stat().st_size} bytes")
 
-                    # 创建目标目录并解压到其中（zip 内部没有目录结构）
+                    # 创建目标目录并解压到其中（优先 python zipfile，避免系统 unzip 差异）
                     model_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        with zipfile.ZipFile(zip_path, "r") as zf:
+                            zf.extractall(model_dir)
+                    except Exception as zip_e:
+                        logger.warning(f"zipfile 解压失败，尝试系统 unzip: {zip_e}")
+                        result = subprocess.run(
+                            ["unzip", "-o", "-q", str(zip_path), "-d", str(model_dir)],
+                            capture_output=True, text=True, timeout=120
+                        )
+                        if result.returncode != 0:
+                            logger.warning(f"unzip 解压失败: {result.stderr}")
+                            continue
 
-                    result = subprocess.run(
-                        ["unzip", "-o", "-q", str(zip_path), "-d", str(model_dir)],
-                        capture_output=True, text=True, timeout=120
-                    )
-
-                    if result.returncode != 0:
-                        logger.warning(f"unzip 解压失败: {result.stderr}")
-                        continue
+                    # 兼容 zip 内部带一层 model_name/ 的情况
+                    nested_dir = model_dir / model_name
+                    if nested_dir.is_dir():
+                        import shutil
+                        for item in nested_dir.iterdir():
+                            dst = model_dir / item.name
+                            if dst.exists():
+                                if dst.is_dir():
+                                    shutil.rmtree(dst, ignore_errors=True)
+                                else:
+                                    dst.unlink(missing_ok=True)
+                            shutil.move(str(item), str(dst))
+                        shutil.rmtree(nested_dir, ignore_errors=True)
 
                     # 重要：保留 zip 文件！spacy_pkuseg 会检查 zip 是否存在
                     # 不要删除 zip_path
 
-                    # 验证
-                    if check_file.exists():
+                    # 验证：至少要有 check_file + unigram_word.txt
+                    unigram_file = model_dir / "unigram_word.txt"
+                    if check_file.exists() and unigram_file.exists():
                         logger.info(f"{model_name} 下载并解压成功（保留 zip 文件）")
                         files = [f.name for f in model_dir.iterdir()]
                         logger.info(f"{model_name} 目录内容: {files}")
                         downloaded = True
                         break
                     else:
-                        logger.warning(f"解压后文件不存在: {check_file}")
+                        logger.warning(f"解压后关键文件缺失: {check_file.name} / {unigram_file.name}")
                         if model_dir.exists():
                             files = [f.name for f in model_dir.iterdir()]
                             logger.info(f"{model_name} 目录内容: {files}")

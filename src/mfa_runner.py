@@ -11,6 +11,7 @@ import subprocess
 import logging
 import time
 import re
+import zipfile
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -277,11 +278,48 @@ def _build_mfa_env(mfa_root: Optional[Path] = None) -> dict:
             pkuseg_home.mkdir(parents=True, exist_ok=True)
             env["PKUSEG_HOME"] = str(pkuseg_home)
             logger.info(f"设置 PKUSEG_HOME: {pkuseg_home}")
-            
-            # 验证 pkuseg 模型是否存在（检查 zip 文件，这是 spacy_pkuseg 的检查方式）
+
+            # 验证并自愈 pkuseg 模型目录（避免 MFA 在 normalize_text 阶段崩溃）
             spacy_ontonotes_zip = pkuseg_home / "spacy_ontonotes.zip"
+            model_dir = pkuseg_home / "spacy_ontonotes"
+            required_candidates = [
+                model_dir / "features.msgpack",
+                model_dir / "features.pkl",
+                model_dir / "features.json",
+            ]
+            has_feature = any(p.exists() for p in required_candidates)
+            has_unigram = (model_dir / "unigram_word.txt").exists()
+
             if spacy_ontonotes_zip.exists():
                 logger.info(f"pkuseg 模型 zip 已存在: {spacy_ontonotes_zip}")
+                if not (has_feature and has_unigram):
+                    logger.warning("pkuseg 模型目录不完整，尝试从 zip 自动修复...")
+                    try:
+                        model_dir.mkdir(parents=True, exist_ok=True)
+                        with zipfile.ZipFile(spacy_ontonotes_zip, "r") as zf:
+                            zf.extractall(model_dir)
+
+                        # 兼容 zip 内部带一层 spacy_ontonotes/ 的情况
+                        nested_dir = model_dir / "spacy_ontonotes"
+                        if nested_dir.is_dir():
+                            for item in nested_dir.iterdir():
+                                dst = model_dir / item.name
+                                if dst.exists():
+                                    if dst.is_dir():
+                                        shutil.rmtree(dst, ignore_errors=True)
+                                    else:
+                                        dst.unlink(missing_ok=True)
+                                shutil.move(str(item), str(dst))
+                            shutil.rmtree(nested_dir, ignore_errors=True)
+
+                        has_feature = any(p.exists() for p in required_candidates)
+                        has_unigram = (model_dir / "unigram_word.txt").exists()
+                        if has_feature and has_unigram:
+                            logger.info("pkuseg 模型目录修复成功")
+                        else:
+                            logger.warning("pkuseg 模型目录修复后仍不完整，建议触发重新下载")
+                    except Exception as e:
+                        logger.warning(f"pkuseg 自动修复失败: {e}")
             else:
                 logger.warning(f"pkuseg 模型 zip 不存在: {spacy_ontonotes_zip}")
                 # 列出目录内容供调试
