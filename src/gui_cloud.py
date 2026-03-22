@@ -53,11 +53,11 @@ class CloudTaskManager:
     """
 
     def __init__(self, 
-                 max_make_jobs: int = 1,
+                 max_make_jobs: int = 5,
                  max_whisper_jobs: int = 0,
-                 max_mfa_jobs: int = 1, 
-                 max_export_jobs: int = 2,
-                 max_job_seconds: int = 1800):
+                 max_mfa_jobs: int = 2, 
+                 max_export_jobs: int = 10,
+                 max_job_seconds: int = 7200):
         """初始化任务管理器
         
         Args:
@@ -292,22 +292,22 @@ class CloudConfig:
     # 语言选项
     LANGUAGES = ["chinese", "japanese"]
 
-    # 独立队列并发限制（针对 2核 CPU、16GB 内存的推荐配置）
+    # 独立队列并发限制（针对升级后硬件配置的推荐配置）
     # 支持通过环境变量覆盖默认值
     # 
     # 资源消耗估算（每任务）：
     # - make  (VAD→Whisper→MFA→打包): 6-10GB, 10-30分钟
     # - whisper (单独识别): 3-5GB, 4-12秒/句
-    # - mfa (单独对齐, 自动 2核): 2-4GB, 5-20秒/句
+    # - mfa (单独对齐, 自动多核): 2-4GB, 5-20秒/句
     # - export (导出, I/O密集): 1-2GB, 1-5秒/句
     #
-    MAX_MAKE_JOBS = int(os.environ.get("JINRIKI_MAX_MAKE_JOBS", "1"))
+    MAX_MAKE_JOBS = int(os.environ.get("JINRIKI_MAX_MAKE_JOBS", "5"))
     MAX_WHISPER_JOBS = int(os.environ.get("JINRIKI_MAX_WHISPER_JOBS", "0"))   # 0=不限制（默认）
-    MAX_MFA_JOBS = int(os.environ.get("JINRIKI_MAX_MFA_JOBS", "1"))
-    MAX_EXPORT_JOBS = int(os.environ.get("JINRIKI_MAX_EXPORT_JOBS", "2"))
+    MAX_MFA_JOBS = int(os.environ.get("JINRIKI_MAX_MFA_JOBS", "2"))
+    MAX_EXPORT_JOBS = int(os.environ.get("JINRIKI_MAX_EXPORT_JOBS", "10"))
     
     # 任务超时时间（秒）
-    MAX_JOB_SECONDS = int(os.environ.get("JINRIKI_MAX_JOB_SECONDS", "1800"))    # 30分钟
+    MAX_JOB_SECONDS = int(os.environ.get("JINRIKI_MAX_JOB_SECONDS", "7200"))    # 2小时
 
 
 TASK_MANAGER = CloudTaskManager(
