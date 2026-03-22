@@ -10,10 +10,12 @@ import shutil
 import subprocess
 import logging
 import time
+import re
 from pathlib import Path
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
+PROB_PATTERN = re.compile(r"\b(\d+\.\d+|1)\b")
 
 # 定位路径
 BASE_DIR = Path(__file__).parent.parent.absolute()
@@ -235,6 +237,7 @@ def _clean_dict_empty_lines(dict_path: str) -> int:
         # 这样可以最大化规避 MFA 解析器在边缘行上的 IndexError。
         sanitized_lines = []
         malformed_count = 0
+        prob_only_count = 0
         comment_count = 0
         for line in lines:
             stripped = line.replace('\ufeff', '').strip()
@@ -252,6 +255,16 @@ def _clean_dict_empty_lines(dict_path: str) -> int:
                 malformed_count += 1
                 continue
 
+            rest = tokens[1:]
+            # 与 MFA parse_dictionary_file 对齐：允许 1~4 个前置概率字段
+            # 但概率字段之后必须至少有一个音素，否则 MFA 内部会 IndexError。
+            idx = 0
+            while idx < len(rest) and idx < 4 and PROB_PATTERN.match(rest[idx]):
+                idx += 1
+            if idx >= len(rest):
+                prob_only_count += 1
+                continue
+
             word = tokens[0]
             pronunciation = " ".join(tokens[1:])
             sanitized_lines.append(f"{word}\t{pronunciation}\n")
@@ -265,7 +278,7 @@ def _clean_dict_empty_lines(dict_path: str) -> int:
         if removed_count > 0:
             logger.info(
                 f"字典文件清理完成: 原 {original_count} 行, 现 {len(sanitized_lines)} 行, "
-                f"移除 {removed_count} 行（注释 {comment_count} 行, 格式异常 {malformed_count} 行）"
+                f"移除 {removed_count} 行（注释 {comment_count} 行, 格式异常 {malformed_count} 行, 概率无音素 {prob_only_count} 行）"
             )
         else:
             logger.info(f"字典文件标准化完成: 共 {len(sanitized_lines)} 行（已统一为 tab 分隔）")

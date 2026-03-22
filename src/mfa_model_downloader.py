@@ -11,10 +11,12 @@ import logging
 import urllib.request
 import urllib.error
 import time
+import re
 from pathlib import Path
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
+PROB_PATTERN = re.compile(r"\b(\d+\.\d+|1)\b")
 
 # 模型下载基础 URL
 GITHUB_RELEASE_BASE = "https://github.com/MontrealCorpusTools/mfa-models/releases/download"
@@ -136,8 +138,22 @@ def _verify_file_integrity(
                     if not stripped:
                         continue
 
+                    parts = stripped.split()
                     # MFA 字典支持任意空白分隔，至少需 2 列
-                    if len(stripped.split()) >= 2:
+                    if len(parts) < 2:
+                        invalid_line_count += 1
+                        continue
+
+                    # 与 MFA parse_dictionary_file 对齐：概率字段后必须有音素
+                    rest = parts[1:]
+                    idx = 0
+                    while idx < len(rest) and idx < 4 and PROB_PATTERN.match(rest[idx]):
+                        idx += 1
+                    if idx >= len(rest):
+                        invalid_line_count += 1
+                        continue
+
+                    if len(parts) >= 2:
                         valid_line_count += 1
                     else:
                         invalid_line_count += 1
@@ -285,6 +301,7 @@ def _clean_dictionary_file(
         cleaned_lines = []
         removed_count = 0
         comment_count = 0
+        prob_only_count = 0
         for line in lines:
             stripped = line.replace('\ufeff', '').strip()
             if not stripped:
@@ -299,6 +316,15 @@ def _clean_dictionary_file(
                 continue
 
             tokens = stripped.split()
+            rest = tokens[1:]
+            idx = 0
+            while idx < len(rest) and idx < 4 and PROB_PATTERN.match(rest[idx]):
+                idx += 1
+            if idx >= len(rest):
+                prob_only_count += 1
+                removed_count += 1
+                continue
+
             cleaned_lines.append(f"{tokens[0]}\t{' '.join(tokens[1:])}\n")
         
         # 无论是否移除行，都重写为标准 tab 分隔格式
@@ -307,7 +333,9 @@ def _clean_dictionary_file(
 
         if progress_callback:
             if removed_count > 0:
-                progress_callback(f"已清理 {removed_count} 个空行/无效行（含注释 {comment_count} 行）")
+                progress_callback(
+                    f"已清理 {removed_count} 个空行/无效行（含注释 {comment_count} 行, 概率无音素 {prob_only_count} 行）"
+                )
             else:
                 progress_callback(f"字典标准化完成，共 {len(cleaned_lines)} 行（已统一为 tab 分隔）")
         
