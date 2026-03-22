@@ -12,11 +12,41 @@ import urllib.request
 import urllib.error
 import time
 import re
+import zipfile
 from pathlib import Path
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 PROB_PATTERN = re.compile(r"\b(\d+\.\d+|1)\b")
+
+
+def _is_valid_zip(file_path: str) -> bool:
+    """检查文件是否为有效的 zip 文件
+    
+    参数:
+        file_path: 文件路径
+    
+    返回:
+        是否为有效的 zip 文件
+    """
+    if not os.path.exists(file_path):
+        return False
+    
+    try:
+        with zipfile.ZipFile(file_path, 'r') as zf:
+            # 尝试读取 zip 文件的中央目录
+            # testzip() 返回 None if OK，返回第一个坏文件名 if 有错
+            bad_file = zf.testzip()
+            if bad_file:
+                logger.warning(f"zip 文件损坏，坏文件: {bad_file}")
+                return False
+            return True
+    except zipfile.BadZipFile:
+        logger.warning(f"不是有效的 zip 文件: {file_path}")
+        return False
+    except Exception as e:
+        logger.warning(f"检查 zip 文件异常: {e}")
+        return False
 
 # 模型下载基础 URL
 GITHUB_RELEASE_BASE = "https://github.com/MontrealCorpusTools/mfa-models/releases/download"
@@ -377,17 +407,34 @@ def download_acoustic_model(
     
     # 检查现有文件
     if os.path.exists(dest_path) and not force_download:
-        # 简单检查：文件存在且大小大于 1MB
         file_size = os.path.getsize(dest_path)
-        if file_size > 1024 * 1024:
-            log(f"声学模型已存在: {dest_path}")
+        
+        # 首先检查大小（快速验证）
+        if file_size < 1024 * 1024:
+            log(f"声学模型文件异常 (大小: {file_size} bytes)，重新下载...")
+        # 然后检查 zip 的有效性
+        elif _is_valid_zip(dest_path):
+            log(f"声学模型已存在且有效: {dest_path}")
             return True, dest_path
         else:
-            log(f"声学模型文件异常 (大小: {file_size} bytes)，重新下载...")
+            log(f"声学模型文件损坏（非有效 zip），删除并重新下载...")
+            try:
+                os.remove(dest_path)
+            except Exception as e:
+                log(f"删除损坏文件失败: {e}")
     
     for candidate_url in _build_mirror_urls(url):
         if _download_file(candidate_url, dest_path, progress_callback, retries=2, timeout=300):
-            return True, dest_path
+            # 下载完成后验证 zip 有效性
+            if _is_valid_zip(dest_path):
+                log(f"声学模型下载并验证成功: {dest_path}")
+                return True, dest_path
+            else:
+                log(f"下载的文件不是有效的 zip，尝试下一个源...")
+                try:
+                    os.remove(dest_path)
+                except Exception:
+                    pass
     return False, "声学模型下载失败"
 
 
