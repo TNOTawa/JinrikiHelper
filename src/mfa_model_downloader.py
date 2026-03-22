@@ -10,6 +10,7 @@ import hashlib
 import logging
 import urllib.request
 import urllib.error
+import time
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -162,7 +163,9 @@ def _verify_file_integrity(
 def _download_file(
     url: str,
     dest_path: str,
-    progress_callback: Optional[Callable[[str], None]] = None
+    progress_callback: Optional[Callable[[str], None]] = None,
+    retries: int = 2,
+    timeout: int = 180,
 ) -> bool:
     """
     下载文件
@@ -180,65 +183,86 @@ def _download_file(
         if progress_callback:
             progress_callback(msg)
     
-    try:
-        log(f"正在下载: {url}")
-        
-        # 创建目录
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        
-        # 下载到临时文件，完成后再重命名
+    # 创建目录
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+    for attempt in range(1, retries + 1):
         temp_path = dest_path + ".downloading"
-        
-        # 下载文件
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        
-        with urllib.request.urlopen(req, timeout=120) as response:
-            total_size = response.headers.get("Content-Length")
-            if total_size:
-                total_size = int(total_size)
-                log(f"文件大小: {total_size / 1024 / 1024:.1f} MB")
-            
-            # 分块下载
-            block_size = 8192
-            downloaded = 0
-            
-            with open(temp_path, "wb") as f:
-                while True:
-                    chunk = response.read(block_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    
-                    if total_size and downloaded % (block_size * 100) == 0:
-                        percent = downloaded / total_size * 100
-                        log(f"下载进度: {percent:.1f}%")
-        
-        # 下载完成，重命名
-        if os.path.exists(dest_path):
-            os.remove(dest_path)
-        os.rename(temp_path, dest_path)
-        
-        log(f"下载完成: {dest_path}")
-        return True
-        
-    except urllib.error.HTTPError as e:
-        log(f"HTTP 错误: {e.code} - {e.reason}")
-        return False
-    except urllib.error.URLError as e:
-        log(f"网络错误: {e.reason}")
-        return False
-    except Exception as e:
-        log(f"下载失败: {e}")
-        return False
-    finally:
-        # 清理临时文件
-        temp_path = dest_path + ".downloading"
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except:
-                pass
+        try:
+            log(f"正在下载: {url} (第{attempt}/{retries}次)")
+
+            # 下载文件
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                total_size = response.headers.get("Content-Length")
+                if total_size:
+                    total_size = int(total_size)
+                    log(f"文件大小: {total_size / 1024 / 1024:.1f} MB")
+
+                # 分块下载
+                block_size = 8192
+                downloaded = 0
+
+                with open(temp_path, "wb") as f:
+                    while True:
+                        chunk = response.read(block_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+
+                        if total_size and downloaded % (block_size * 100) == 0:
+                            percent = downloaded / total_size * 100
+                            log(f"下载进度: {percent:.1f}%")
+
+            # 下载完成，重命名
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+            os.rename(temp_path, dest_path)
+
+            log(f"下载完成: {dest_path}")
+            return True
+
+        except urllib.error.HTTPError as e:
+            log(f"HTTP 错误: {e.code} - {e.reason}")
+        except urllib.error.URLError as e:
+            log(f"网络错误: {e.reason}")
+        except Exception as e:
+            log(f"下载失败: {e}")
+        finally:
+            # 清理临时文件
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+        if attempt < retries:
+            wait_seconds = min(5 * attempt, 15)
+            log(f"{wait_seconds} 秒后重试")
+            time.sleep(wait_seconds)
+
+    return False
+
+
+def _build_mirror_urls(url: str) -> list[str]:
+    """构建下载镜像列表（原始地址 + GitHub 镜像）。"""
+    urls = [url]
+    if "github.com/" in url:
+        urls = [
+            url,
+            f"https://ghfast.top/{url}",
+            f"https://gh-proxy.com/{url}",
+            f"https://gitcode.com/gh_mirrors/{url.split('github.com/', 1)[1]}",
+        ]
+
+    # 去重并保持顺序
+    deduped = []
+    for u in urls:
+        if u not in deduped:
+            deduped.append(u)
+    return deduped
 
 
 
@@ -312,10 +336,10 @@ def download_acoustic_model(
         else:
             log(f"声学模型文件异常 (大小: {file_size} bytes)，重新下载...")
     
-    if _download_file(url, dest_path, progress_callback):
-        return True, dest_path
-    else:
-        return False, "声学模型下载失败"
+    for candidate_url in _build_mirror_urls(url):
+        if _download_file(candidate_url, dest_path, progress_callback, retries=2, timeout=300):
+            return True, dest_path
+    return False, "声学模型下载失败"
 
 
 def download_dictionary(
@@ -374,7 +398,12 @@ def download_dictionary(
         need_download = True
     
     if need_download:
-        if not _download_file(url, dest_path, progress_callback):
+        downloaded = False
+        for candidate_url in _build_mirror_urls(url):
+            if _download_file(candidate_url, dest_path, progress_callback, retries=2, timeout=300):
+                downloaded = True
+                break
+        if not downloaded:
             return False, "字典文件下载失败"
         
         # 清理空行

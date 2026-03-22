@@ -9,6 +9,7 @@ import sys
 import subprocess
 import platform
 import logging
+import time
 from pathlib import Path
 
 logging.basicConfig(
@@ -435,9 +436,15 @@ def download_all_models():
     if errors:
         logger.error("=" * 50)
         logger.error(f"以下模型加载失败: {', '.join(errors)}")
-        logger.error("程序无法继续运行，退出")
+        strict_mode = os.environ.get("JINRIKI_STRICT_MODEL_DOWNLOAD", "0") == "1"
+        if strict_mode:
+            logger.error("严格模式开启，程序退出（可通过 JINRIKI_STRICT_MODEL_DOWNLOAD=0 关闭）")
+            logger.error("=" * 50)
+            sys.exit(1)
+
+        logger.warning("将以降级模式继续启动（部分功能可能不可用）")
+        logger.warning("如需下载成功后再启动，请设置 JINRIKI_STRICT_MODEL_DOWNLOAD=1")
         logger.error("=" * 50)
-        sys.exit(1)
     
     logger.info("=" * 50)
     logger.info("所有模型下载完成")
@@ -514,6 +521,7 @@ def download_pkuseg_models() -> bool:
         {
             "name": "spacy_ontonotes",
             "urls": [
+                "https://gitcode.com/gh_mirrors/sp/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
                 "https://ghfast.top/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
                 "https://gh-proxy.com/https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip", 
                 "https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
@@ -529,58 +537,70 @@ def download_pkuseg_models() -> bool:
         check_file = model_dir / model["check_file"]
         
         downloaded = False
-        for url in model["urls"]:
-            logger.info(f"下载 {model_name}: {url}")
-            
-            try:
-                # 下载
-                result = subprocess.run(
-                    ["curl", "-fsSL", "-o", str(zip_path), url],
-                    capture_output=True, text=True, timeout=180
-                )
-                
-                if result.returncode != 0:
-                    logger.warning(f"curl 下载失败: {result.stderr}")
-                    continue
-                
-                if not zip_path.exists() or zip_path.stat().st_size < 1000:
-                    logger.warning(f"下载文件无效或太小")
-                    continue
-                
-                logger.info(f"下载完成，文件大小: {zip_path.stat().st_size} bytes")
-                
-                # 创建目标目录并解压到其中（zip 内部没有目录结构）
-                model_dir.mkdir(parents=True, exist_ok=True)
-                
-                result = subprocess.run(
-                    ["unzip", "-o", "-q", str(zip_path), "-d", str(model_dir)],
-                    capture_output=True, text=True, timeout=60
-                )
-                
-                if result.returncode != 0:
-                    logger.warning(f"unzip 解压失败: {result.stderr}")
-                    continue
-                
-                # 重要：保留 zip 文件！spacy_pkuseg 会检查 zip 是否存在
-                # 不要删除 zip_path
-                
-                # 验证
-                if check_file.exists():
-                    logger.info(f"{model_name} 下载并解压成功（保留 zip 文件）")
-                    files = [f.name for f in model_dir.iterdir()]
-                    logger.info(f"{model_name} 目录内容: {files}")
-                    downloaded = True
-                    break
-                else:
-                    logger.warning(f"解压后文件不存在: {check_file}")
-                    if model_dir.exists():
+        timeout_seconds = int(os.environ.get("JINRIKI_PKUSEG_DOWNLOAD_TIMEOUT", "300"))
+        max_rounds = int(os.environ.get("JINRIKI_PKUSEG_DOWNLOAD_ROUNDS", "3"))
+
+        for round_idx in range(1, max_rounds + 1):
+            logger.info(f"{model_name} 下载轮次: {round_idx}/{max_rounds}")
+            for url in model["urls"]:
+                logger.info(f"下载 {model_name}: {url}")
+
+                try:
+                    # 下载
+                    result = subprocess.run(
+                        ["curl", "-fL", "--retry", "2", "--retry-delay", "2", "-o", str(zip_path), url],
+                        capture_output=True, text=True, timeout=timeout_seconds
+                    )
+
+                    if result.returncode != 0:
+                        logger.warning(f"curl 下载失败: {result.stderr}")
+                        continue
+
+                    if not zip_path.exists() or zip_path.stat().st_size < 1000:
+                        logger.warning("下载文件无效或太小")
+                        continue
+
+                    logger.info(f"下载完成，文件大小: {zip_path.stat().st_size} bytes")
+
+                    # 创建目标目录并解压到其中（zip 内部没有目录结构）
+                    model_dir.mkdir(parents=True, exist_ok=True)
+
+                    result = subprocess.run(
+                        ["unzip", "-o", "-q", str(zip_path), "-d", str(model_dir)],
+                        capture_output=True, text=True, timeout=120
+                    )
+
+                    if result.returncode != 0:
+                        logger.warning(f"unzip 解压失败: {result.stderr}")
+                        continue
+
+                    # 重要：保留 zip 文件！spacy_pkuseg 会检查 zip 是否存在
+                    # 不要删除 zip_path
+
+                    # 验证
+                    if check_file.exists():
+                        logger.info(f"{model_name} 下载并解压成功（保留 zip 文件）")
                         files = [f.name for f in model_dir.iterdir()]
                         logger.info(f"{model_name} 目录内容: {files}")
-                    
-            except subprocess.TimeoutExpired:
-                logger.warning(f"下载超时: {url}")
-            except Exception as e:
-                logger.warning(f"下载异常: {e}")
+                        downloaded = True
+                        break
+                    else:
+                        logger.warning(f"解压后文件不存在: {check_file}")
+                        if model_dir.exists():
+                            files = [f.name for f in model_dir.iterdir()]
+                            logger.info(f"{model_name} 目录内容: {files}")
+
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"下载超时: {url}")
+                except Exception as e:
+                    logger.warning(f"下载异常: {e}")
+
+            if downloaded:
+                break
+
+            sleep_seconds = min(5 * round_idx, 15)
+            logger.info(f"{model_name} 本轮未成功，{sleep_seconds} 秒后重试")
+            time.sleep(sleep_seconds)
         
         if not downloaded:
             logger.error(f"{model_name} 所有镜像下载失败")
@@ -665,6 +685,7 @@ def download_mfa_models_all() -> bool:
         from src.mfa_model_downloader import download_language_models, _verify_file_integrity, LANGUAGE_MODELS
         
         languages = ["mandarin", "japanese"]
+        per_language_retries = int(os.environ.get("JINRIKI_MFA_MODEL_RETRIES", "3"))
         
         for lang in languages:
             logger.info(f"\n下载 {lang} 模型...")
@@ -687,12 +708,28 @@ def download_mfa_models_all() -> bool:
                         except Exception as e:
                             logger.error(f"删除损坏文件失败: {e}")
             
-            success, acoustic_path, dict_path = download_language_models(
-                lang, str(MFA_DIR), logger.info
-            )
+            success = False
+            last_err = ""
+            for attempt in range(1, per_language_retries + 1):
+                logger.info(f"{lang} 下载尝试: {attempt}/{per_language_retries}")
+                ok, acoustic_path, dict_path = download_language_models(
+                    lang, str(MFA_DIR), logger.info
+                )
+                if ok:
+                    success = True
+                    break
+
+                last_err = dict_path
+                wait_seconds = min(10 * attempt, 30)
+                logger.warning(f"{lang} 下载失败（第{attempt}次）: {last_err}")
+                if attempt < per_language_retries:
+                    logger.info(f"{wait_seconds} 秒后重试 {lang}...")
+                    time.sleep(wait_seconds)
+
             if not success:
                 logger.error(f"{lang} 模型下载失败")
                 return False
+
             logger.info(f"{lang} 模型下载完成")
         
         return True
