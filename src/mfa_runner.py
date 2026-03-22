@@ -226,20 +226,25 @@ def _clean_dict_empty_lines(dict_path: str) -> int:
     """
     try:
         # utf-8-sig: 自动兼容可能存在的 BOM
-        with open(dict_path, 'r', encoding='utf-8-sig') as f:
+        with open(dict_path, 'r', encoding='utf-8-sig', errors='replace') as f:
             lines = f.readlines()
         
         original_count = len(lines)
         
-        # 过滤空行和无效行
-        # MFA 字典允许空白分隔，不应强制要求制表符
-        # 合法行至少应有 2 个 token（词条 + 至少一个音素）
-        valid_lines = []
+        # 过滤空行/注释/无效行，并重写为标准格式：word<TAB>phones...
+        # 这样可以最大化规避 MFA 解析器在边缘行上的 IndexError。
+        sanitized_lines = []
         malformed_count = 0
+        comment_count = 0
         for line in lines:
-            stripped = line.strip()
+            stripped = line.replace('\ufeff', '').strip()
             # 跳过空行
             if not stripped:
+                continue
+
+            # 常见注释行
+            if stripped.startswith('#') or stripped.startswith(';') or stripped.startswith('//'):
+                comment_count += 1
                 continue
 
             tokens = stripped.split()
@@ -247,16 +252,18 @@ def _clean_dict_empty_lines(dict_path: str) -> int:
                 malformed_count += 1
                 continue
 
-            valid_lines.append(line)
+            word = tokens[0]
+            pronunciation = " ".join(tokens[1:])
+            sanitized_lines.append(f"{word}\t{pronunciation}\n")
         
-        removed_count = original_count - len(valid_lines)
+        removed_count = original_count - len(sanitized_lines)
         
         if removed_count > 0:
             with open(dict_path, 'w', encoding='utf-8') as f:
-                f.writelines(valid_lines)
+                f.writelines(sanitized_lines)
             logger.info(
-                f"字典文件清理完成: 原 {original_count} 行, 现 {len(valid_lines)} 行, "
-                f"移除 {removed_count} 行（其中格式异常 {malformed_count} 行）"
+                f"字典文件清理完成: 原 {original_count} 行, 现 {len(sanitized_lines)} 行, "
+                f"移除 {removed_count} 行（注释 {comment_count} 行, 格式异常 {malformed_count} 行）"
             )
         else:
             logger.info(f"字典文件无需清理: {original_count} 行")
@@ -462,6 +469,11 @@ def run_mfa_alignment(
             return True, stdout
         else:
             error_msg = stderr or stdout or "未知错误"
+            if "parse_dictionary_file" in error_msg and "IndexError: list index out of range" in error_msg:
+                error_msg = (
+                    "字典解析失败（IndexError）。已尝试自动清理字典，"
+                    "请检查字典中是否存在异常符号行或损坏内容。\n\n" + error_msg
+                )
             log(f"MFA 运行出错: {error_msg}")
             return False, error_msg
             

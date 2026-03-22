@@ -278,27 +278,34 @@ def _clean_dictionary_file(
     返回: 清理的空行数量
     """
     try:
-        with open(dict_path, 'r', encoding='utf-8-sig') as f:
+        with open(dict_path, 'r', encoding='utf-8-sig', errors='replace') as f:
             lines = f.readlines()
         
-        # 过滤空行与格式异常行（至少应有 2 个 token）
+        # 过滤空行/注释/异常行，并标准化为 word<TAB>phones...
         cleaned_lines = []
         removed_count = 0
+        comment_count = 0
         for line in lines:
-            stripped = line.strip()
+            stripped = line.replace('\ufeff', '').strip()
             if not stripped:
+                removed_count += 1
+                continue
+            if stripped.startswith('#') or stripped.startswith(';') or stripped.startswith('//'):
+                comment_count += 1
                 removed_count += 1
                 continue
             if len(stripped.split()) < 2:
                 removed_count += 1
                 continue
-            cleaned_lines.append(line)
+
+            tokens = stripped.split()
+            cleaned_lines.append(f"{tokens[0]}\t{' '.join(tokens[1:])}\n")
         
         if removed_count > 0:
             with open(dict_path, 'w', encoding='utf-8') as f:
                 f.writelines(cleaned_lines)
             if progress_callback:
-                progress_callback(f"已清理 {removed_count} 个空行/无效行")
+                progress_callback(f"已清理 {removed_count} 个空行/无效行（含注释 {comment_count} 行）")
         
         return removed_count
     except Exception as e:
