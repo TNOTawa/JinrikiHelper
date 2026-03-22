@@ -257,16 +257,18 @@ def _clean_dict_empty_lines(dict_path: str) -> int:
             sanitized_lines.append(f"{word}\t{pronunciation}\n")
         
         removed_count = original_count - len(sanitized_lines)
-        
+
+        # 无论是否移除行，都强制重写为标准 tab 分隔，避免 MFA 因格式边缘情况报错。
+        with open(dict_path, 'w', encoding='utf-8') as f:
+            f.writelines(sanitized_lines)
+
         if removed_count > 0:
-            with open(dict_path, 'w', encoding='utf-8') as f:
-                f.writelines(sanitized_lines)
             logger.info(
                 f"字典文件清理完成: 原 {original_count} 行, 现 {len(sanitized_lines)} 行, "
                 f"移除 {removed_count} 行（注释 {comment_count} 行, 格式异常 {malformed_count} 行）"
             )
         else:
-            logger.info(f"字典文件无需清理: {original_count} 行")
+            logger.info(f"字典文件标准化完成: 共 {len(sanitized_lines)} 行（已统一为 tab 分隔）")
         
         return removed_count
     except PermissionError as e:

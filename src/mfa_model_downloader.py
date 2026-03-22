@@ -301,11 +301,15 @@ def _clean_dictionary_file(
             tokens = stripped.split()
             cleaned_lines.append(f"{tokens[0]}\t{' '.join(tokens[1:])}\n")
         
-        if removed_count > 0:
-            with open(dict_path, 'w', encoding='utf-8') as f:
-                f.writelines(cleaned_lines)
-            if progress_callback:
+        # 无论是否移除行，都重写为标准 tab 分隔格式
+        with open(dict_path, 'w', encoding='utf-8') as f:
+            f.writelines(cleaned_lines)
+
+        if progress_callback:
+            if removed_count > 0:
                 progress_callback(f"已清理 {removed_count} 个空行/无效行（含注释 {comment_count} 行）")
+            else:
+                progress_callback(f"字典标准化完成，共 {len(cleaned_lines)} 行（已统一为 tab 分隔）")
         
         return removed_count
     except Exception as e:
