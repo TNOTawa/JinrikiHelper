@@ -157,6 +157,83 @@ def check_mfa_available() -> bool:
         return False
 
 
+def _ensure_mfa_japanese_support() -> bool:
+    """在 MFA 环境中安装日语 tokenizer 支持（sudachipy/sudachidict-core）。
+    
+    这是必需的，因为 MFA 检测到日语文本时会调用 sudachipy，
+    如果环境中缺少会抛出 ImportError。
+    
+    返回:
+        bool: 是否成功安装或已存在
+    """
+    if IS_WINDOWS:
+        # Windows 外挂模式：日语支持通常已包含在 mfa_engine Python 中
+        return True
+    
+    mfa_env_name = os.environ.get("JINRIKI_MFA_ENV_NAME", "mfa")
+    conda_tools = _get_callable_conda_tools()
+    
+    if not conda_tools:
+        logger.warning("未找到 conda/mamba，无法在 MFA 环境安装日语支持")
+        return False
+    
+    # 尝试用各种方式在 MFA 环境中安装依赖
+    install_attempts = []
+    
+    if conda_tools.get("micromamba"):
+        micromamba = conda_tools["micromamba"]
+        install_attempts.append(
+            ("micromamba(conda-forge)",
+             [micromamba, "install", "-y", "-n", mfa_env_name, "-c", "conda-forge",
+              "sudachipy", "sudachidict-core"])
+        )
+    
+    if conda_tools.get("mamba"):
+        mamba = conda_tools["mamba"]
+        install_attempts.append(
+            ("mamba(conda-forge)",
+             [mamba, "install", "-y", "-n", mfa_env_name, "-c", "conda-forge",
+              "sudachipy", "sudachidict-core"])
+        )
+    
+    if conda_tools.get("conda"):
+        conda = conda_tools["conda"]
+        install_attempts.append(
+            ("conda(conda-forge)",
+             [conda, "install", "-y", "-n", mfa_env_name, "-c", "conda-forge",
+              "sudachipy", "sudachidict-core"])
+        )
+    
+    # 如果 conda 安装失败，尝试用 mamba run pip install
+    if conda_tools.get("micromamba"):
+        micromamba = conda_tools["micromamba"]
+        install_attempts.append(
+            ("micromamba(pip-in-env)",
+             [micromamba, "run", "-n", mfa_env_name, "pip", "install", "--no-cache-dir",
+              "sudachipy", "sudachidict-core"])
+        )
+    
+    logger.info("检查 MFA 环境中的日语 tokenizer 支持...")
+    
+    for installer_name, cmd in install_attempts:
+        try:
+            logger.debug(f"尝试: {installer_name} | {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
+            if result.returncode == 0:
+                logger.info(f"日语支持安装完成: {installer_name}")
+                return True
+            else:
+                stderr_tail = (result.stderr or "")[-300:]
+                logger.debug(f"{installer_name} 失败: {stderr_tail}")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"{installer_name} 超时（300秒）")
+        except Exception as e:
+            logger.debug(f"{installer_name} 异常: {e}")
+    
+    logger.warning("MFA 环境日语支持安装失败，日语对齐可能会失败（继续运行）")
+    return False
+
+
 def _get_mfa_command() -> list:
     """
     获取 MFA 命令前缀
@@ -367,6 +444,10 @@ def run_mfa_alignment(
     if not check_mfa_available():
         platform_hint = "tools/mfa_engine 目录" if IS_WINDOWS else "conda install -c conda-forge montreal-forced-aligner"
         return False, f"MFA 环境不可用，请检查 {platform_hint}"
+    
+    # 确保 MFA 环境有日语/中文分词支持（Linux 环境下自动安装）
+    if not IS_WINDOWS:
+        _ensure_mfa_japanese_support()
     
     # 设置默认路径
     dict_path = dict_path or str(DEFAULT_DICT_PATH)

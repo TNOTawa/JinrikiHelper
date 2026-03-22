@@ -323,30 +323,62 @@ def setup_mfa_linux() -> bool:
                     logger.info(f"已将 {candidate_dir} 加入 PATH")
                     break
 
-        # 安装中文/日语分词依赖
+        # 在 MFA 环境中安装日语/中文分词依赖（必须在 MFA 环境中，而不是系统 Python）
+        # 否则 MFA 无法访问 spacy/sudachipy 包
         pkuseg_home = PERSISTENT_MODELS_DIR / "pkuseg" if PERSISTENT_MODELS_DIR.parent.exists() else Path("/root/.pkuseg")
         pkuseg_home.mkdir(parents=True, exist_ok=True)
         os.environ["PKUSEG_HOME"] = str(pkuseg_home)
 
-        try:
-            has_pkuseg = importlib.util.find_spec("spacy_pkuseg") is not None
-        except Exception:
-            has_pkuseg = False
-
-        if not has_pkuseg:
-            logger.info("安装中文/日语分词依赖...")
-            dep_cmd = [
-                sys.executable, "-m", "pip", "install", "--no-cache-dir",
-                "spacy-pkuseg", "dragonmapper", "hanziconv",
-                "sudachipy", "sudachidict_core"
-            ]
-            dep_result = subprocess.run(dep_cmd, capture_output=True, text=True, timeout=600)
-            if dep_result.returncode != 0:
-                logger.warning(f"分词依赖安装失败（继续运行）: {dep_result.stderr[-500:]}")
+        logger.info("在 MFA 环境中安装日语/中文分词支持...")
+        conda_tools = _get_callable_conda_tools()
+        mfa_env_name = os.environ.get("JINRIKI_MFA_ENV_NAME", "mfa")
+        
+        # 优先使用conda-forge安装到MFA环境（最稳定）
+        deps_installed = False
+        
+        # 尝试候选安装方式
+        install_attempts_deps = []
+        
+        if conda_tools.get("micromamba"):
+            micromamba = conda_tools["micromamba"]
+            install_attempts_deps.extend([
+                ("micromamba(conda-forge)", 
+                 [micromamba, "install", "-y", "-n", mfa_env_name, "-c", "conda-forge", 
+                  "spacy", "sudachipy", "sudachidict-core"]),
+                ("micromamba(pip in mfa env)", 
+                 [micromamba, "run", "-n", mfa_env_name, "pip", "install", "--no-cache-dir",
+                  "spacy-pkuseg", "dragonmapper", "hanziconv"]),
+            ])
+        
+        if conda_tools.get("mamba"):
+            mamba = conda_tools["mamba"]
+            install_attempts_deps.append(
+                ("mamba(conda-forge)",
+                 [mamba, "install", "-y", "-n", mfa_env_name, "-c", "conda-forge",
+                  "spacy", "sudachipy", "sudachidict-core"])
+            )
+        
+        if conda_tools.get("conda"):
+            conda = conda_tools["conda"]
+            install_attempts_deps.append(
+                ("conda(conda-forge)",
+                 [conda, "install", "-y", "-n", mfa_env_name, "-c", "conda-forge",
+                  "spacy", "sudachipy", "sudachidict-core"])
+            )
+        
+        for installer_name, dep_cmd in install_attempts_deps:
+            logger.info(f"尝试用 {installer_name} 安装分词依赖...")
+            dep_result = subprocess.run(dep_cmd, capture_output=True, text=True, timeout=600, check=False)
+            if dep_result.returncode == 0:
+                logger.info(f"{installer_name} 分词依赖安装完成")
+                deps_installed = True
+                break
             else:
-                logger.info("分词依赖安装完成")
-        else:
-            logger.info("分词依赖已存在")
+                stderr_tail = (dep_result.stderr or "")[-500:]
+                logger.warning(f"{installer_name} 分词依赖安装失败: {stderr_tail}")
+        
+        if not deps_installed:
+            logger.warning("MFA 环境分词依赖安装失败，某些语言对齐可能不可用（继续运行）")
 
         if verify_mfa_working():
             logger.info("MFA 验证通过")
