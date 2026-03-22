@@ -43,14 +43,48 @@ class TaskToken:
 
 
 class CloudTaskManager:
-    """云端任务管理器：有界并发 + 会话取消 + 滞留回收"""
+    """云端任务管理器：独立队列并发 + 会话取消 + 滞留回收
+    
+    支持四个独立的并发队列：
+    - make: 综合任务（VAD→Whisper→MFA→打包）包含最多资源消耗
+    - whisper: 单独的语音识别任务
+    - mfa: 单独的 MFA 对齐任务
+    - export: 音源导出任务
+    """
 
-    def __init__(self, max_jobs: int, max_job_seconds: int):
-        self.max_jobs = max(1, int(max_jobs))
+    def __init__(self, 
+                 max_make_jobs: int = 1,
+                 max_whisper_jobs: int = 0,
+                 max_mfa_jobs: int = 1, 
+                 max_export_jobs: int = 2,
+                 max_job_seconds: int = 1800):
+        """初始化任务管理器
+        
+        Args:
+            max_make_jobs: 综合任务（make）的最大并发数（包含 Whisper+MFA）
+            max_whisper_jobs: 单独 Whisper 任务的最大并发数（0表示不独立限制）
+            max_mfa_jobs: 单独 MFA 对齐的最大并发数
+            max_export_jobs: 音源导出的最大并发数
+            max_job_seconds: 单个任务的最大运行时间（秒）
+        """
+        self.max_make_jobs = max(1, int(max_make_jobs))
+        self.max_whisper_jobs = max(0, int(max_whisper_jobs))  # 0 表示不限制
+        self.max_mfa_jobs = max(1, int(max_mfa_jobs))
+        self.max_export_jobs = max(1, int(max_export_jobs))
         self.max_job_seconds = max(60, int(max_job_seconds))
+        
         self._lock = threading.Lock()
         self._tasks: Dict[str, TaskToken] = {}
         self._session_index: Dict[str, set] = {}
+        
+        # 按任务类型统计并发数
+        self._task_counts: Dict[str, int] = {
+            "make": 0,
+            "whisper": 0,
+            "mfa": 0,
+            "export": 0,
+        }
+        
         self._watchdog = threading.Thread(
             target=self._watchdog_loop,
             name="cloud-task-watchdog",
@@ -58,12 +92,27 @@ class CloudTaskManager:
         )
         self._watchdog.start()
 
+    def _get_max_for_kind(self, kind: str) -> int:
+        """根据任务类型获取最大并发数"""
+        if kind == "make":
+            return self.max_make_jobs
+        elif kind == "whisper":
+            return self.max_whisper_jobs if self.max_whisper_jobs > 0 else 999  # 0 表示不限制
+        elif kind == "mfa":
+            return self.max_mfa_jobs
+        elif kind == "export":
+            return self.max_export_jobs
+        else:
+            return 1  # 未知类型默认 1
+
     def start_task(self, kind: str, session_id: Optional[str]) -> Optional[TaskToken]:
         sid = (session_id or "").strip() or uuid.uuid4().hex[:8]
         now = time.time()
         with self._lock:
-            active = len(self._tasks)
-            if active >= self.max_jobs:
+            # 检查该类型是否达到上限
+            current = self._task_counts.get(kind, 0)
+            max_allowed = self._get_max_for_kind(kind)
+            if current >= max_allowed:
                 return None
 
             task_id = uuid.uuid4().hex[:10]
@@ -76,6 +125,7 @@ class CloudTaskManager:
                 cancel_event=threading.Event()
             )
             self._tasks[task_id] = token
+            self._task_counts[kind] = current + 1
             self._session_index.setdefault(sid, set()).add(task_id)
             return token
 
@@ -86,6 +136,10 @@ class CloudTaskManager:
             token = self._tasks.pop(task_id, None)
             if not token:
                 return
+            # 更新任务类型的计数
+            current = self._task_counts.get(token.kind, 0)
+            self._task_counts[token.kind] = max(0, current - 1)
+            
             session_tasks = self._session_index.get(token.session_id)
             if session_tasks:
                 session_tasks.discard(task_id)
@@ -123,14 +177,24 @@ class CloudTaskManager:
 
     def get_status_text(self) -> str:
         with self._lock:
-            active = len(self._tasks)
+            counts = dict(self._task_counts)  # 复制当前计数
             running = [f"{t.kind}:{t.task_id}" for t in self._tasks.values()]
+        
+        # 格式化队列状态
+        make_status = f"制作: {counts.get('make', 0)}/{self.max_make_jobs}"
+        whisper_status = f"识别: {counts.get('whisper', 0)}/{self.max_whisper_jobs if self.max_whisper_jobs > 0 else '∞'}"
+        mfa_status = f"对齐: {counts.get('mfa', 0)}/{self.max_mfa_jobs}"
+        export_status = f"导出: {counts.get('export', 0)}/{self.max_export_jobs}"
+        
+        total_active = sum(counts.values())
+        status_line = f"【任务队列】 {make_status} | {whisper_status} | {mfa_status} | {export_status}"
+        
         if running:
             detail = " | ".join(running[:3])
             if len(running) > 3:
                 detail += f" ...共{len(running)}个"
-            return f"当前并发数：{active}/{self.max_jobs}\\n运行中：{detail}"
-        return f"当前并发数：{active}/{self.max_jobs}"
+            return f"{status_line}\\n【运行中】 {detail}"
+        return status_line
 
     def _watchdog_loop(self):
         while True:
@@ -228,13 +292,29 @@ class CloudConfig:
     # 语言选项
     LANGUAGES = ["chinese", "japanese"]
 
-    # 并发与任务监控
-    MAX_CONCURRENT_JOBS = int(os.environ.get("JINRIKI_MAX_CONCURRENT_JOBS", "2"))
-    MAX_JOB_SECONDS = int(os.environ.get("JINRIKI_MAX_JOB_SECONDS", "1800"))
+    # 独立队列并发限制（针对 2核 CPU、16GB 内存的推荐配置）
+    # 支持通过环境变量覆盖默认值
+    # 
+    # 资源消耗估算（每任务）：
+    # - make  (VAD→Whisper→MFA→打包): 6-10GB, 10-30分钟
+    # - whisper (单独识别): 3-5GB, 4-12秒/句
+    # - mfa (单独对齐, 自动 2核): 2-4GB, 5-20秒/句
+    # - export (导出, I/O密集): 1-2GB, 1-5秒/句
+    #
+    MAX_MAKE_JOBS = int(os.environ.get("JINRIKI_MAX_MAKE_JOBS", "1"))
+    MAX_WHISPER_JOBS = int(os.environ.get("JINRIKI_MAX_WHISPER_JOBS", "0"))   # 0=不限制（默认）
+    MAX_MFA_JOBS = int(os.environ.get("JINRIKI_MAX_MFA_JOBS", "1"))
+    MAX_EXPORT_JOBS = int(os.environ.get("JINRIKI_MAX_EXPORT_JOBS", "2"))
+    
+    # 任务超时时间（秒）
+    MAX_JOB_SECONDS = int(os.environ.get("JINRIKI_MAX_JOB_SECONDS", "1800"))    # 30分钟
 
 
 TASK_MANAGER = CloudTaskManager(
-    max_jobs=CloudConfig.MAX_CONCURRENT_JOBS,
+    max_make_jobs=CloudConfig.MAX_MAKE_JOBS,
+    max_whisper_jobs=CloudConfig.MAX_WHISPER_JOBS,
+    max_mfa_jobs=CloudConfig.MAX_MFA_JOBS,
+    max_export_jobs=CloudConfig.MAX_EXPORT_JOBS,
     max_job_seconds=CloudConfig.MAX_JOB_SECONDS
 )
 
@@ -460,7 +540,7 @@ def process_make_voicebank(
     """
     task = TASK_MANAGER.start_task("make", session_id)
     if not task:
-        return f"❌ 服务繁忙，当前并发已达上限（{CloudConfig.MAX_CONCURRENT_JOBS}）", "", None, None
+        return f"❌ 服务繁忙，制作任务队列已达上限（{CloudConfig.MAX_MAKE_JOBS}）", "", None, None
     logs = []
     workspace = None
 
@@ -745,7 +825,7 @@ def process_export_voicebank(
     """
     task = TASK_MANAGER.start_task("export", session_id)
     if not task:
-        return f"❌ 服务繁忙，当前并发已达上限（{CloudConfig.MAX_CONCURRENT_JOBS}）", "", None
+        return f"❌ 服务繁忙，导出任务队列已达上限（{CloudConfig.MAX_EXPORT_JOBS}）", "", None
     logs = []
     workspace = None
 
@@ -976,7 +1056,7 @@ def process_mfa_realign(
     """
     task = TASK_MANAGER.start_task("mfa", session_id)
     if not task:
-        return f"❌ 服务繁忙，当前并发已达上限（{CloudConfig.MAX_CONCURRENT_JOBS}）", "", None
+        return f"❌ 服务繁忙，对齐任务队列已达上限（{CloudConfig.MAX_MFA_JOBS}）", "", None
     logs = []
     workspace = None
 
@@ -1559,7 +1639,7 @@ def create_cloud_ui():
                     fn=process_make_voicebank,
                     inputs=[audio_upload, make_source_name, make_language, make_whisper, session_id_state],
                     outputs=[make_status, make_log, make_download, session_voicebank],
-                    concurrency_limit=CloudConfig.MAX_CONCURRENT_JOBS
+                    concurrency_limit=CloudConfig.MAX_MAKE_JOBS
                 )
             
             # ==================== 导出音源页 ====================
@@ -1765,7 +1845,7 @@ def create_cloud_ui():
                     fn=collect_and_export,
                     inputs=[export_upload, export_plugin, session_id_state] + all_option_components,
                     outputs=[export_status, export_log, export_download],
-                    concurrency_limit=CloudConfig.MAX_CONCURRENT_JOBS
+                    concurrency_limit=CloudConfig.MAX_EXPORT_JOBS
                 )
             
             # ==================== MFA补对齐页 ====================
@@ -1839,7 +1919,7 @@ def create_cloud_ui():
                     fn=process_mfa_realign,
                     inputs=[mfa_upload, mfa_language, session_id_state],
                     outputs=[mfa_process_status, mfa_log, mfa_download],
-                    concurrency_limit=CloudConfig.MAX_CONCURRENT_JOBS
+                    concurrency_limit=CloudConfig.MAX_MFA_JOBS
                 )
             
             # ==================== 关于页 ====================
