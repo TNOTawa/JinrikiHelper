@@ -225,23 +225,28 @@ def _clean_dict_empty_lines(dict_path: str) -> int:
     返回: 清理的无效行数量
     """
     try:
-        with open(dict_path, 'r', encoding='utf-8') as f:
+        # utf-8-sig: 自动兼容可能存在的 BOM
+        with open(dict_path, 'r', encoding='utf-8-sig') as f:
             lines = f.readlines()
         
         original_count = len(lines)
         
-        # 过滤空行和只有空白字符的行
-        # 同时过滤没有制表符分隔的无效行（字典格式: word\tprob\t...）
+        # 过滤空行和无效行
+        # MFA 字典允许空白分隔，不应强制要求制表符
+        # 合法行至少应有 2 个 token（词条 + 至少一个音素）
         valid_lines = []
+        malformed_count = 0
         for line in lines:
             stripped = line.strip()
             # 跳过空行
             if not stripped:
                 continue
-            # 跳过没有制表符的行（无效格式）
-            if '\t' not in line:
-                logger.warning(f"跳过无效字典行: {stripped[:50]}...")
+
+            tokens = stripped.split()
+            if len(tokens) < 2:
+                malformed_count += 1
                 continue
+
             valid_lines.append(line)
         
         removed_count = original_count - len(valid_lines)
@@ -249,7 +254,10 @@ def _clean_dict_empty_lines(dict_path: str) -> int:
         if removed_count > 0:
             with open(dict_path, 'w', encoding='utf-8') as f:
                 f.writelines(valid_lines)
-            logger.info(f"字典文件清理完成: 原 {original_count} 行, 现 {len(valid_lines)} 行, 移除 {removed_count} 行")
+            logger.info(
+                f"字典文件清理完成: 原 {original_count} 行, 现 {len(valid_lines)} 行, "
+                f"移除 {removed_count} 行（其中格式异常 {malformed_count} 行）"
+            )
         else:
             logger.info(f"字典文件无需清理: {original_count} 行")
         

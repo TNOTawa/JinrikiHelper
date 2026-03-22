@@ -130,13 +130,14 @@ def _verify_file_integrity(
         try:
             valid_line_count = 0
             invalid_line_count = 0
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, 'r', encoding='utf-8-sig') as f:
                 for line in f:
                     stripped = line.strip()
                     if not stripped:
                         continue
-                    # 检查是否有制表符分隔（字典格式要求）
-                    if '\t' in line:
+
+                    # MFA 字典支持任意空白分隔，至少需 2 列
+                    if len(stripped.split()) >= 2:
                         valid_line_count += 1
                     else:
                         invalid_line_count += 1
@@ -277,18 +278,27 @@ def _clean_dictionary_file(
     返回: 清理的空行数量
     """
     try:
-        with open(dict_path, 'r', encoding='utf-8') as f:
+        with open(dict_path, 'r', encoding='utf-8-sig') as f:
             lines = f.readlines()
         
-        # 过滤空行
-        non_empty_lines = [line for line in lines if line.strip()]
-        removed_count = len(lines) - len(non_empty_lines)
+        # 过滤空行与格式异常行（至少应有 2 个 token）
+        cleaned_lines = []
+        removed_count = 0
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                removed_count += 1
+                continue
+            if len(stripped.split()) < 2:
+                removed_count += 1
+                continue
+            cleaned_lines.append(line)
         
         if removed_count > 0:
             with open(dict_path, 'w', encoding='utf-8') as f:
-                f.writelines(non_empty_lines)
+                f.writelines(cleaned_lines)
             if progress_callback:
-                progress_callback(f"已清理 {removed_count} 个空行")
+                progress_callback(f"已清理 {removed_count} 个空行/无效行")
         
         return removed_count
     except Exception as e:
