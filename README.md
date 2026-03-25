@@ -12,6 +12,8 @@ license: mit
 
 # 人力V助手 (JinrikiHelper)
 
+# 已于 2026/03/25 停止维护
+
 > 基于 [xszqxszq/auto-voice-bank](https://github.com/xszqxszq/auto-voice-bank) 开发的语音数据集处理工具
 
 作者：TNOT

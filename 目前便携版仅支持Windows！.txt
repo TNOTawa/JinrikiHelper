@@ -1,1 +1,4 @@
-没有条件可以使用：https://www.modelscope.cn/studios/TNOTqwq/JinrikiHelper/
+没有条件可以使用：
+
+https://www.modelscope.cn/studios/TNOTqwq/JinrikiHelper/（已失效）
+https://huggingface.co/spaces/TNOT/JinrikiHelper（未知Bug）
